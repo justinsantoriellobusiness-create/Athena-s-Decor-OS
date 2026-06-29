@@ -19,9 +19,7 @@ jobs:
         uses: pleaseai/setup-claude-code@v1
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }})     # create this secret in repo Settings → Secrets → Actions
-          marketplaces: your-org/private-plugins  # replace with your marketplace slug(s)
-          plugins: private-plugin@your-org        # replace with your plugin identifier(s)
-
+          
       - name: Verify installation
         run: |
           echo "Claude Code step completed. Check action logs for details."
