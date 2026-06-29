@@ -12,6 +12,8 @@
     "react-dom": "^18.3.1"
   },
   "devDependencies": {
+    "@builder.io/vite-plugin-jsx-loc": "latest",
+    "vite-plugin-manus-runtime": "latest",
     "@vitejs/plugin-react": "^4.3.1",
     "@tailwindcss/vite": "^4.0.0",
     "tailwindcss": "^4.0.0",
