@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll } from "vitest";
 import request from "supertest";
-import app from "../../src/api/server.js";
+import app from "../../src/api/app.js";
 
 describe("Posts API", () => {
   let userId: string;

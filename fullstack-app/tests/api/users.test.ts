@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import request from "supertest";
-import app from "../../src/api/server.js";
+import app from "../../src/api/app.js";
 
 describe("Users API", () => {
   it("GET /api/users returns an array of seeded users", async () => {
