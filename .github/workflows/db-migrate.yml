@@ -15,8 +15,8 @@ jobs:
         with:
           node-version: 20
 
-      - name: Install pnpm and Railway CLI
-        run: npm install -g pnpm@10 @railway/cli
+      - name: Install pnpm
+        run: npm install -g pnpm@10
 
       - name: Install dependencies
         run: pnpm install --no-frozen-lockfile
@@ -24,35 +24,114 @@ jobs:
       - name: Find public DB URL and push schema
         run: |
           set -e
-          WEB_SERVICE_ID="f0ead486-176e-4541-98cb-325e83514298"
 
-          VARS=$(railway variables --service "$WEB_SERVICE_ID" --kv 2>&1 || true)
+          GQL_ENDPOINT="https://backboard.railway.app/graphql/v2"
 
-          echo "=== Variable names available on web service (values hidden) ==="
-          echo "$VARS" | cut -d'=' -f1
+          gql() {
+            curl -s -X POST "$GQL_ENDPOINT" \
+              -H "Authorization: Bearer $RAILWAY_TOKEN" \
+              -H "Content-Type: application/json" \
+              -d "$1"
+          }
 
-          # Try to find any variable whose value is a public mysql proxy URL
-          LINE=$(echo "$VARS" | grep -iE '^[A-Z0-9_]+=mysql://.*proxy\.rlwy\.net' | head -1 || true)
+          PROJECT_JSON=$(gql "$(node -e '
+            const q = `query($id:String!){ project(id:$id){ services{ edges{ node{ id name } } } environments{ edges{ node{ id name } } } } }`;
+            console.log(JSON.stringify({ query: q, variables: { id: process.env.RAILWAY_PROJECT_ID } }));
+          ')")
 
-          if [ -z "$LINE" ]; then
-            echo "No public mysql:// proxy URL found among web service's variables."
-            echo "Will attempt DATABASE_URL as-is (may be internal-only and fail)."
-            LINE=$(echo "$VARS" | grep -E '^DATABASE_URL=' | head -1 || true)
-          fi
+          SERVICE_IDS=$(echo "$PROJECT_JSON" | node -e '
+            let d="";process.stdin.on("data",c=>d+=c);process.stdin.on("end",()=>{
+              try{
+                const j=JSON.parse(d);
+                const edges=j.data.project.services.edges;
+                console.log(edges.map(e=>e.node.id).join("\n"));
+              }catch(e){ console.error("PARSE_ERROR"); }
+            });
+          ')
 
-          if [ -z "$LINE" ]; then
-            echo "No DATABASE_URL found at all on web service."
+          ENV_ID=$(echo "$PROJECT_JSON" | node -e '
+            let d="";process.stdin.on("data",c=>d+=c);process.stdin.on("end",()=>{
+              try{
+                const j=JSON.parse(d);
+                const edges=j.data.project.environments.edges;
+                console.log(edges[0].node.id);
+              }catch(e){ console.error(""); }
+            });
+          ')
+
+          if [ -z "$SERVICE_IDS" ] || [ -z "$ENV_ID" ]; then
+            echo "Could not resolve services/environment from Railway GraphQL API."
+            echo "Project response (safe - no secrets in this object):"
+            echo "$PROJECT_JSON"
             exit 1
           fi
 
-          PUBLIC_DB_URL=$(echo "$LINE" | cut -d'=' -f2-)
-          FOUND_VAR_NAME=$(echo "$LINE" | cut -d'=' -f1)
+          echo "Found $(echo "$SERVICE_IDS" | wc -l) service(s), environment $ENV_ID"
+
+          PUBLIC_DB_URL=""
+          FOUND_VAR_NAME=""
+
+          for SID in $SERVICE_IDS; do
+            VARS_JSON=$(gql "$(node -e "
+              const q = \`query(\\\$p:String!,\\\$e:String!,\\\$s:String!){ variables(projectId:\\\$p,environmentId:\\\$e,serviceId:\\\$s) }\`;
+              console.log(JSON.stringify({ query: q, variables: { p: process.env.RAILWAY_PROJECT_ID, e: process.env.ENV_ID, s: '$SID' } }));
+            ")")
+
+            LINE=$(echo "$VARS_JSON" | node -e '
+              let d="";process.stdin.on("data",c=>d+=c);process.stdin.on("end",()=>{
+                try{
+                  const j=JSON.parse(d);
+                  const vars=j.data.variables || {};
+                  for (const [k,v] of Object.entries(vars)) {
+                    if (typeof v === "string" && /^mysql:\/\/.*proxy\.rlwy\.net/i.test(v)) {
+                      console.log(k+"="+v);
+                      process.exit(0);
+                    }
+                  }
+                }catch(e){}
+              });
+            ' 2>/dev/null || true)
+
+            if [ -n "$LINE" ]; then
+              FOUND_VAR_NAME=$(echo "$LINE" | cut -d'=' -f1)
+              PUBLIC_DB_URL=$(echo "$LINE" | cut -d'=' -f2-)
+              break
+            fi
+          done
+
+          if [ -z "$PUBLIC_DB_URL" ]; then
+            echo "No public mysql:// proxy URL found on any service in this project."
+            exit 1
+          fi
 
           echo "::add-mask::$PUBLIC_DB_URL"
-          echo "Using variable: $FOUND_VAR_NAME"
+          echo "Using variable '$FOUND_VAR_NAME'"
 
           export DATABASE_URL="$PUBLIC_DB_URL"
+          set +e
           yes | pnpm exec drizzle-kit push
+          PUSH_EXIT=$?
+          set -e
+
+          if [ $PUSH_EXIT -ne 0 ]; then
+            echo "drizzle-kit push exited with code $PUSH_EXIT"
+            exit 1
+          fi
+
+          echo "Schema push completed, verifying tables exist..."
+          node -e "
+            const mysql = require('mysql2/promise');
+            (async () => {
+              const conn = await mysql.createConnection(process.env.DATABASE_URL);
+              const [rows] = await conn.query(\"SHOW TABLES LIKE 'automation_settings'\");
+              await conn.end();
+              if (rows.length === 0) {
+                console.error('VERIFICATION FAILED: automation_settings table still does not exist.');
+                process.exit(1);
+              }
+              console.log('VERIFIED: automation_settings table exists.');
+            })().catch(err => { console.error('Verification error:', err.message); process.exit(1); });
+          "
         env:
           RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
           RAILWAY_PROJECT_ID: ${{ secrets.RAILWAY_PROJECT_ID }}
