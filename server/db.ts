@@ -270,13 +270,13 @@ export async function getSourcingAppCredentials(): Promise<SourcingAppCredential
   if (!db) return [];
   return db.select().from(sourcingAppCredentials).orderBy(sourcingAppCredentials.app);
 }
-export async function getSourcingAppCredential(app: "autods" | "cj"): Promise<SourcingAppCredential | undefined> {
+export async function getSourcingAppCredential(app: "autods" | "cj" | "dsers"): Promise<SourcingAppCredential | undefined> {
   const db = await getDb();
   if (!db) return undefined;
   const rows = await db.select().from(sourcingAppCredentials).where(eq(sourcingAppCredentials.app, app)).limit(1);
   return rows[0];
 }
-export async function upsertSourcingAppCredential(app: "autods" | "cj", data: Partial<SourcingAppCredential>) {
+export async function upsertSourcingAppCredential(app: "autods" | "cj" | "dsers", data: Partial<SourcingAppCredential>) {
   const db = await getDb();
   if (!db) return;
   const existing = await getSourcingAppCredential(app);
