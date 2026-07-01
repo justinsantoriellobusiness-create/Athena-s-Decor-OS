@@ -3,6 +3,7 @@ import express from "express";
 import { createServer } from "http";
 import net from "net";
 import { createExpressMiddleware } from "@trpc/server/adapters/express";
+import { migrate } from "drizzle-orm/mysql2/migrator";
 import { registerOAuthRoutes } from "./oauth";
 import { registerPasswordAuthRoutes } from "./passwordAuth";
 import { registerStorageProxy } from "./storageProxy";
@@ -11,6 +12,7 @@ import { createContext } from "./context";
 import { serveStatic, setupVite } from "./vite";
 import { registerScheduledRoutes } from "../scheduled";
 import { seedDefaultSettings } from "../seed";
+import { getDb } from "../db";
 
 function isPortAvailable(port: number): Promise<boolean> {
   return new Promise(resolve => {
@@ -31,6 +33,20 @@ async function findAvailablePort(startPort: number = 3000): Promise<number> {
   throw new Error(`No available port found starting from ${startPort}`);
 }
 
+async function runMigrations() {
+  const db = await getDb();
+  if (!db) {
+    console.warn("[Migrate] No DATABASE_URL configured, skipping migrations");
+    return;
+  }
+  try {
+    await migrate(db, { migrationsFolder: "./drizzle" });
+    console.log("[Migrate] Migrations applied successfully");
+  } catch (error) {
+    console.error("[Migrate] Failed to apply migrations:", error);
+  }
+}
+
 async function startServer() {
   const app = express();
   const server = createServer(app);
@@ -41,6 +57,7 @@ async function startServer() {
   registerOAuthRoutes(app);
   registerPasswordAuthRoutes(app);
   registerScheduledRoutes(app);
+  await runMigrations();
   await seedDefaultSettings();
   // tRPC API
   app.get("/api/health", (_req, res) => {
