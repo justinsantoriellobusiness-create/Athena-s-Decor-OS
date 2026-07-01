@@ -24,46 +24,32 @@ jobs:
       - name: Find public DB URL and push schema
         run: |
           set -e
+          WEB_SERVICE_ID="f0ead486-176e-4541-98cb-325e83514298"
 
-          echo "Discovering services in project..."
-          STATUS_JSON=$(railway status --json 2>/dev/null || true)
-          SERVICE_IDS=$(echo "$STATUS_JSON" | grep -o '"serviceId":"[^"]*"' | cut -d'"' -f4 | sort -u)
+          VARS=$(railway variables --service "$WEB_SERVICE_ID" --kv 2>&1 || true)
 
-          if [ -z "$SERVICE_IDS" ]; then
-            echo "No services discovered from railway status --json"
+          echo "=== Variable names available on web service (values hidden) ==="
+          echo "$VARS" | cut -d'=' -f1
+
+          # Try to find any variable whose value is a public mysql proxy URL
+          LINE=$(echo "$VARS" | grep -iE '^[A-Z0-9_]+=mysql://.*proxy\.rlwy\.net' | head -1 || true)
+
+          if [ -z "$LINE" ]; then
+            echo "No public mysql:// proxy URL found among web service's variables."
+            echo "Will attempt DATABASE_URL as-is (may be internal-only and fail)."
+            LINE=$(echo "$VARS" | grep -E '^DATABASE_URL=' | head -1 || true)
+          fi
+
+          if [ -z "$LINE" ]; then
+            echo "No DATABASE_URL found at all on web service."
             exit 1
           fi
 
-          PUBLIC_DB_URL=""
-          FOUND_VAR_NAME=""
-          FOUND_SERVICE_ID=""
+          PUBLIC_DB_URL=$(echo "$LINE" | cut -d'=' -f2-)
+          FOUND_VAR_NAME=$(echo "$LINE" | cut -d'=' -f1)
 
-          for SID in $SERVICE_IDS; do
-            VARS=$(railway variables --service "$SID" --kv 2>/dev/null || true)
-            if [ -z "$VARS" ]; then
-              continue
-            fi
-            # Look for a variable whose value is a public mysql connection string
-            LINE=$(echo "$VARS" | grep -iE '^[A-Z0-9_]+=mysql://.*proxy\.rlwy\.net' | head -1 || true)
-            if [ -n "$LINE" ]; then
-              FOUND_VAR_NAME=$(echo "$LINE" | cut -d'=' -f1)
-              PUBLIC_DB_URL=$(echo "$LINE" | cut -d'=' -f2-)
-              FOUND_SERVICE_ID="$SID"
-              break
-            fi
-          done
-
-          if [ -z "$PUBLIC_DB_URL" ]; then
-            echo "Could not find a public mysql:// proxy URL in any service's variables."
-            echo "Service IDs checked: $SERVICE_IDS"
-            exit 1
-          fi
-
-          # Mask the credential so it can never leak into logs from this point on
           echo "::add-mask::$PUBLIC_DB_URL"
-
-          echo "Found public DB URL in variable '$FOUND_VAR_NAME' on service $FOUND_SERVICE_ID"
-          echo "Pushing schema..."
+          echo "Using variable: $FOUND_VAR_NAME"
 
           export DATABASE_URL="$PUBLIC_DB_URL"
           yes | pnpm exec drizzle-kit push
