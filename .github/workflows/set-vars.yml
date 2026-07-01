@@ -1,0 +1,19 @@
+name: Set Railway Variables
+
+on:
+  workflow_dispatch: {}
+
+jobs:
+  set-vars:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Install Railway CLI
+        run: npm install -g @railway/cli
+
+      - name: Set DATABASE_URL and redeploy
+        run: |
+          railway variables set DATABASE_URL="mysql://root:hxODngEMcxlscdUIjIDLFeQIRdHgjdWC@mysql.railway.internal:3306/railway" --project-id "$RAILWAY_PROJECT_ID"
+          railway redeploy --project-id "$RAILWAY_PROJECT_ID" --yes
+        env:
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+          RAILWAY_PROJECT_ID: ${{ secrets.RAILWAY_PROJECT_ID }}
