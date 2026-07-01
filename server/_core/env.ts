@@ -11,4 +11,6 @@ export const ENV = {
   ZAPIER_API_SECRET: process.env.ZAPIER_API_SECRET ?? "",
   WIX_API_KEY: process.env.WIX_API_KEY ?? "",
   WIX_ACCOUNT_ID: process.env.WIX_ACCOUNT_ID ?? "",
+  adminEmail: process.env.ADMIN_EMAIL ?? "",
+  adminPassword: process.env.ADMIN_PASSWORD ?? "",
 };
