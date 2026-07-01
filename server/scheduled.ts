@@ -3,7 +3,8 @@
  * Called by heartbeat jobs via POST /api/scheduled/:module
  * Each endpoint runs the corresponding automation module.
  */
-import { Router } from "express";
+import { Router, Request, Response, NextFunction } from "express";
+import { sdk } from "./_core/sdk";
 import { invokeLLM } from "./_core/llm";
 import { generateImage } from "./_core/imageGeneration";
 import { storagePut } from "./storage";
@@ -38,9 +39,22 @@ import { getShopifyClient } from "./shopify";
 import { decryptCredential } from "./crypto";
 import { notifyOwner } from "./_core/notification";
 
+// Auth middleware: only heartbeat cron system can call scheduled routes
+async function cronAuth(req: Request, res: Response, next: NextFunction) {
+  try {
+    const user = await sdk.authenticateRequest(req);
+    if (!user.isCron) {
+      return res.status(403).json({ error: "cron-only" });
+    }
+    next();
+  } catch {
+    return res.status(403).json({ error: "Unauthorized — scheduled routes are cron-only" });
+  }
+}
+
 export function registerScheduledRoutes(app: Router) {
   // SEO automation
-  app.post("/api/scheduled/seo", async (req, res) => {
+  app.post("/api/scheduled/seo", cronAuth, async (req, res) => {
     const setting = (await getAllAutomationSettings()).find(s => s.module === "seo");
     if (!setting?.enabled) return res.json({ skipped: true });
 
@@ -67,7 +81,7 @@ export function registerScheduledRoutes(app: Router) {
   });
 
   // Blog automation
-  app.post("/api/scheduled/blog", async (req, res) => {
+  app.post("/api/scheduled/blog", cronAuth, async (req, res) => {
     const setting = (await getAllAutomationSettings()).find(s => s.module === "blog");
     if (!setting?.enabled) return res.json({ skipped: true });
 
@@ -107,7 +121,7 @@ export function registerScheduledRoutes(app: Router) {
   });
 
   // Inventory automation
-  app.post("/api/scheduled/inventory", async (req, res) => {
+  app.post("/api/scheduled/inventory", cronAuth, async (req, res) => {
     const setting = (await getAllAutomationSettings()).find(s => s.module === "inventory");
     if (!setting?.enabled) return res.json({ skipped: true });
 
@@ -150,7 +164,7 @@ export function registerScheduledRoutes(app: Router) {
   });
 
   // Ads automation
-  app.post("/api/scheduled/ads", async (req, res) => {
+  app.post("/api/scheduled/ads", cronAuth, async (req, res) => {
     const setting = (await getAllAutomationSettings()).find(s => s.module === "ads");
     if (!setting?.enabled) return res.json({ skipped: true });
     await updateAutomationSetting("ads", { lastRunAt: new Date(), lastRunStatus: "success" });
@@ -158,7 +172,7 @@ export function registerScheduledRoutes(app: Router) {
   });
 
   // ─── Accounting: Daily auto-sync all connected accounts ────────────────────
-  app.post("/api/scheduled/accounting", async (req, res) => {
+  app.post("/api/scheduled/accounting", cronAuth, async (req, res) => {
     try {
       const accounts = await getFinancialAccounts();
       const activeAccounts = accounts.filter((a: any) => a.isActive && a.isConnected);
@@ -218,7 +232,7 @@ export function registerScheduledRoutes(app: Router) {
   });
 
   // ─── Autonomous: Email Scraper ────────────────────────────────────────────────
-  app.post("/api/scheduled/email-scraper", async (req, res) => {
+  app.post("/api/scheduled/email-scraper", cronAuth, async (req, res) => {
     try {
       const allConfigs = await getAllAutonomousConfigsAll();
       const configs = allConfigs.filter((c: any) => c.module === "email_scraper" && c.enabled);
@@ -251,7 +265,7 @@ export function registerScheduledRoutes(app: Router) {
   });
 
   // ─── Autonomous: Email Campaigns ──────────────────────────────────────────────
-  app.post("/api/scheduled/email-campaigns", async (req, res) => {
+  app.post("/api/scheduled/email-campaigns", cronAuth, async (req, res) => {
     try {
       const allConfigs = await getAllAutonomousConfigsAll();
       const configs = allConfigs.filter((c: any) => c.module === "email_campaigns" && c.enabled);
@@ -281,7 +295,7 @@ export function registerScheduledRoutes(app: Router) {
   });
 
   // ─── Autonomous: Backlinker ───────────────────────────────────────────────────
-  app.post("/api/scheduled/backlinker", async (req, res) => {
+  app.post("/api/scheduled/backlinker", cronAuth, async (req, res) => {
     try {
       const allConfigs = await getAllAutonomousConfigsAll();
       const configs = allConfigs.filter((c: any) => c.module === "backlinker" && c.enabled);
@@ -309,7 +323,7 @@ export function registerScheduledRoutes(app: Router) {
   });
 
   // ─── Autonomous: Blog ─────────────────────────────────────────────────────────
-  app.post("/api/scheduled/blog-autonomous", async (req, res) => {
+  app.post("/api/scheduled/blog-autonomous", cronAuth, async (req, res) => {
     try {
       const allConfigs = await getAllAutonomousConfigsAll();
       const configs = allConfigs.filter((c: any) => c.module === "blog" && c.enabled);
@@ -346,7 +360,7 @@ export function registerScheduledRoutes(app: Router) {
   });
 
   // Shopify sync
-  app.post("/api/scheduled/shopify", async (req, res) => {
+  app.post("/api/scheduled/shopify", cronAuth, async (req, res) => {
     const setting = (await getAllAutomationSettings()).find(s => s.module === "shopify");
     if (!setting?.enabled) return res.json({ skipped: true });
     try {
