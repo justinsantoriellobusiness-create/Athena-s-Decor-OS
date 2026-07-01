@@ -1,0 +1,18 @@
+name: List Env Var Names
+
+on:
+  workflow_dispatch: {}
+
+jobs:
+  list:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Install Railway CLI
+        run: npm install -g @railway/cli 2>/dev/null
+
+      - name: List variable names only (values never printed)
+        run: |
+          SERVICE_ID="f0ead486-176e-4541-98cb-325e83514298"
+          railway variables --service "$SERVICE_ID" --kv 2>/dev/null | cut -d'=' -f1 | sort
+        env:
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
