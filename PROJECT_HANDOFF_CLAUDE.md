@@ -6,7 +6,7 @@
 
 **Current Status**: 85% complete. All core modules built and functional. Currently integrating Wix 360 and Zapier for comprehensive multi-platform data sync.
 
-**Live URL**: https://athenasos-ifjkyzj8.manus.space
+**Live URL**: https://athena-s-decor-os-production.up.railway.app
 
 ---
 
@@ -481,10 +481,7 @@ Response to Frontend (Optimistic Updates)
 - [ ] Rate limiting implemented where needed
 
 ### Deployment Notes
-- Project deploys to Autoscale (serverless) on Cloud Run
-- Cold starts expected (0-30s first request)
-- Node-only runtime (no Python/Go)
-- 512 MB RAM, 1 vCPU, 180s timeout
+- Project deploys to Railway
 - Database: MySQL/TiDB (connection pooling via Drizzle)
 - Storage: S3 via Manus built-in helpers
 - Scheduled jobs: Heartbeat system (not cron)
@@ -517,9 +514,8 @@ pnpm format          # Format with Prettier
 ## Contact & Support
 
 **Project Owner**: Athena's Decor (e-commerce automation)
-**Platform**: Manus (https://manus.im)
-**Repository**: /home/ubuntu/athenas-os
-**Live URL**: https://athenasos-ifjkyzj8.manus.space
+**Repository**: justinsantoriellobusiness-create/Athena-s-Decor-OS
+**Live URL**: https://athena-s-decor-os-production.up.railway.app
 
 ---
 
