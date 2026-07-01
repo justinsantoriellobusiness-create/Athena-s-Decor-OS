@@ -1,5 +1,10 @@
 export const ENV = {
-  appId: process.env.VITE_APP_ID ?? "",
+  // Session JWTs are signed and verified entirely by this server (Manus's
+  // OAuth server is no longer in the loop), so appId only needs to be a
+  // stable non-empty value — it doesn't need to match anything external.
+  // sdk.ts's verifySession() rejects sessions with an empty appId, so
+  // falling through to "" here silently broke every login.
+  appId: process.env.VITE_APP_ID || "athenas-os",
   cookieSecret: process.env.JWT_SECRET ?? "",
   databaseUrl: process.env.DATABASE_URL ?? "",
   oAuthServerUrl: process.env.OAUTH_SERVER_URL ?? "",
