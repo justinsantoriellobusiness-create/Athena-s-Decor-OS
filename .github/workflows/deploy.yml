@@ -16,18 +16,11 @@ jobs:
       - name: Install Railway CLI
         run: npm install -g @railway/cli
 
-      - name: Auto-discover service and deploy
+      - name: Deploy to known service
         run: |
-          # Find the first service in the project
-          SERVICE_ID=$(railway status --json 2>/dev/null | grep -o '"serviceId":"[^"]*"' | head -1 | cut -d'"' -f4)
-
-          if [ -z "$SERVICE_ID" ]; then
-            echo "Deploying to project (single service auto-selected)"
-            railway up --detach
-          else
-            echo "Deploying to service: $SERVICE_ID"
-            railway up --detach --service "$SERVICE_ID"
-          fi
+          SERVICE_ID="f0ead486-176e-4541-98cb-325e83514298"
+          echo "Deploying to service: $SERVICE_ID"
+          railway up --detach --service "$SERVICE_ID"
         env:
           RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
           RAILWAY_PROJECT_ID: ${{ secrets.RAILWAY_PROJECT_ID }}
