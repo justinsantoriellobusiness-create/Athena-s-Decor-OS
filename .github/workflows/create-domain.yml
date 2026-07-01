@@ -7,34 +7,26 @@ jobs:
   create-domain:
     runs-on: ubuntu-latest
     steps:
-      - name: Get service ID and create domain
+      - name: Find project, create domain
         run: |
-          # Get service ID from project
-          RESPONSE=$(curl -s -X POST "https://backboard.railway.com/graphql/v2" \
+          # List all projects to find correct IDs
+          ALL=$(curl -s -X POST "https://backboard.railway.com/graphql/v2" \
             -H "Authorization: Bearer $RAILWAY_TOKEN" \
             -H "Content-Type: application/json" \
-            -d "{\"query\":\"{ project(id: \\\"$RAILWAY_PROJECT_ID\\\") { services { edges { node { id name } } } } }\"}")
+            -d '{"query":"{ me { projects { edges { node { id name services { edges { node { id name } } } environments { edges { node { id name } } } } } } } }"}')
+          echo "ALL PROJECTS: $ALL"
 
-          echo "Project response: $RESPONSE"
-          SERVICE_ID=$(echo "$RESPONSE" | python3 -c "import sys,json; data=json.load(sys.stdin); services=data['data']['project']['services']['edges']; print([s['node']['id'] for s in services if 'mysql' not in s['node']['name'].lower()][0])" 2>/dev/null)
-          echo "Service ID: $SERVICE_ID"
+          # Extract project, service (non-mysql), environment IDs
+          PROJECT_ID=$(echo "$ALL" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['data']['me']['projects']['edges'][0]['node']['id'])")
+          SERVICE_ID=$(echo "$ALL" | python3 -c "import sys,json; d=json.load(sys.stdin); svcs=d['data']['me']['projects']['edges'][0]['node']['services']['edges']; print([s['node']['id'] for s in svcs if 'mysql' not in s['node']['name'].lower()][0])")
+          ENV_ID=$(echo "$ALL" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['data']['me']['projects']['edges'][0]['node']['environments']['edges'][0]['node']['id'])")
+          echo "Project: $PROJECT_ID  Service: $SERVICE_ID  Env: $ENV_ID"
 
-          # Get environment ID
-          ENV_RESPONSE=$(curl -s -X POST "https://backboard.railway.com/graphql/v2" \
-            -H "Authorization: Bearer $RAILWAY_TOKEN" \
-            -H "Content-Type: application/json" \
-            -d "{\"query\":\"{ project(id: \\\"$RAILWAY_PROJECT_ID\\\") { environments { edges { node { id name } } } } }\"}")
-
-          echo "Env response: $ENV_RESPONSE"
-          ENV_ID=$(echo "$ENV_RESPONSE" | python3 -c "import sys,json; data=json.load(sys.stdin); envs=data['data']['project']['environments']['edges']; print(envs[0]['node']['id'])")
-          echo "Environment ID: $ENV_ID"
-
-          # Create the Railway domain
+          # Create Railway subdomain
           DOMAIN_RESPONSE=$(curl -s -X POST "https://backboard.railway.com/graphql/v2" \
             -H "Authorization: Bearer $RAILWAY_TOKEN" \
             -H "Content-Type: application/json" \
             -d "{\"query\":\"mutation { serviceDomainCreate(input: { serviceId: \\\"$SERVICE_ID\\\", environmentId: \\\"$ENV_ID\\\" }) { id domain } }\"}")
-
           echo "Domain response: $DOMAIN_RESPONSE"
         env:
           RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
