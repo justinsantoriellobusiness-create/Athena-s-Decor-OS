@@ -7,22 +7,47 @@ jobs:
   create-domain:
     runs-on: ubuntu-latest
     steps:
-      - name: Create Railway subdomain
+      - name: Find service, create domain
         run: |
-          npm install -g @railway/cli
+          # Query project directly by ID (no "me" query needed)
+          PROJECT=$(curl -s -X POST "https://backboard.railway.com/graphql/v2" \
+            -H "Authorization: Bearer $RAILWAY_TOKEN" \
+            -H "Content-Type: application/json" \
+            -d "{\"query\":\"{ project(id: \\\"$RAILWAY_PROJECT_ID\\\") { id name services { edges { node { id name } } } environments { edges { node { id name } } } } }\"}")
+          echo "PROJECT: $PROJECT"
 
-          # Get service info
-          echo "Linking to project..."
-          railway link --project "$RAILWAY_PROJECT_ID" 2>/dev/null || true
+          # Extract service (non-mysql) and environment IDs
+          SERVICE_ID=$(echo "$PROJECT" | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+svcs = d['data']['project']['services']['edges']
+svc = [s['node']['id'] for s in svcs if 'mysql' not in s['node']['name'].lower()][0]
+print(svc)
+")
+          ENV_ID=$(echo "$PROJECT" | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+print(d['data']['project']['environments']['edges'][0]['node']['id'])
+")
+          echo "Service: $SERVICE_ID  Env: $ENV_ID"
 
-          # Create domain via CLI
-          echo "Creating domain..."
-          RESULT=$(railway domain 2>&1)
-          echo "Domain result: $RESULT"
+          # Create Railway subdomain
+          DOMAIN_RESPONSE=$(curl -s -X POST "https://backboard.railway.com/graphql/v2" \
+            -H "Authorization: Bearer $RAILWAY_TOKEN" \
+            -H "Content-Type: application/json" \
+            -d "{\"query\":\"mutation { serviceDomainCreate(input: { serviceId: \\\"$SERVICE_ID\\\", environmentId: \\\"$ENV_ID\\\" }) { id domain } }\"}")
+          echo "Domain response: $DOMAIN_RESPONSE"
 
-          # Also try to get the current domain
-          STATUS=$(railway status 2>&1)
-          echo "Status: $STATUS"
+          # Extract and print the final domain URL
+          DOMAIN=$(echo "$DOMAIN_RESPONSE" | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+if d.get('data') and d['data'].get('serviceDomainCreate'):
+    print('SUCCESS: https://' + d['data']['serviceDomainCreate']['domain'])
+else:
+    print('ERROR or domain already exists: ' + json.dumps(d))
+" 2>/dev/null || echo "Parse error: $DOMAIN_RESPONSE")
+          echo "$DOMAIN"
         env:
           RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
           RAILWAY_PROJECT_ID: ${{ secrets.RAILWAY_PROJECT_ID }}
