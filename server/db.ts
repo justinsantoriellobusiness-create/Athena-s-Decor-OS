@@ -36,6 +36,18 @@ import {
   type AutonomousConfig,
   campaignProducts,
   type CampaignProduct,
+  wixConfig,
+  type WixConfig,
+  wixProducts,
+  type WixProduct,
+  wixOrders,
+  type WixOrder,
+  wixAnalytics,
+  type WixAnalytics,
+  zapierConfig,
+  type ZapierConfig,
+  zapierWebhooks,
+  type ZapierWebhook,
 } from "../drizzle/schema";
 import { ENV } from "./_core/env";
 
