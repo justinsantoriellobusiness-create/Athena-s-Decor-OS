@@ -1,0 +1,29 @@
+name: Push DB Schema to Railway
+
+on:
+  workflow_dispatch: {}
+
+jobs:
+  migrate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install pnpm and Railway CLI
+        run: npm install -g pnpm@10 @railway/cli
+
+      - name: Install dependencies
+        run: pnpm install --no-frozen-lockfile
+
+      - name: Push schema to Railway MySQL
+        run: |
+          SERVICE_ID="f0ead486-176e-4541-98cb-325e83514298"
+          yes | railway run --service "$SERVICE_ID" -- pnpm exec drizzle-kit push
+        env:
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
