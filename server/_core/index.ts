@@ -13,6 +13,7 @@ import { serveStatic, setupVite } from "./vite";
 import { registerScheduledRoutes } from "../scheduled";
 import { seedDefaultSettings } from "../seed";
 import { getDb } from "../db";
+import { startInternalScheduler } from "./scheduler";
 
 function isPortAvailable(port: number): Promise<boolean> {
   return new Promise(resolve => {
@@ -87,6 +88,7 @@ async function startServer() {
 
   server.listen(port, () => {
     console.log(`Server running on http://localhost:${port}/`);
+    startInternalScheduler(port);
   });
 }
 

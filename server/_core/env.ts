@@ -7,6 +7,7 @@ export const ENV = {
   isProduction: process.env.NODE_ENV === "production",
   forgeApiUrl: process.env.BUILT_IN_FORGE_API_URL ?? "",
   forgeApiKey: process.env.BUILT_IN_FORGE_API_KEY ?? "",
+  anthropicApiKey: process.env.ANTHROPIC_API_KEY ?? "",
   ZAPIER_EMBED_ID: process.env.ZAPIER_EMBED_ID ?? "",
   ZAPIER_API_SECRET: process.env.ZAPIER_API_SECRET ?? "",
   WIX_API_KEY: process.env.WIX_API_KEY ?? "",

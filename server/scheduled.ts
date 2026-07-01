@@ -38,9 +38,16 @@ import {
 import { getShopifyClient } from "./shopify";
 import { decryptCredential } from "./crypto";
 import { notifyOwner } from "./_core/notification";
+import { ENV } from "./_core/env";
+import { INTERNAL_CRON_SECRET_HEADER } from "./_core/scheduler";
 
-// Auth middleware: only heartbeat cron system can call scheduled routes
+// Auth middleware: only the heartbeat cron system (Manus) or this app's own
+// internal scheduler (see ./_core/scheduler.ts) can call scheduled routes.
 async function cronAuth(req: Request, res: Response, next: NextFunction) {
+  const internalSecret = req.headers[INTERNAL_CRON_SECRET_HEADER];
+  if (ENV.cookieSecret && internalSecret === ENV.cookieSecret) {
+    return next();
+  }
   try {
     const user = await sdk.authenticateRequest(req);
     if (!user.isCron) {

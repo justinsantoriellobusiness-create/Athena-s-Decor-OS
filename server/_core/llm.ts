@@ -217,10 +217,134 @@ const resolveApiUrl = () =>
     ? `${ENV.forgeApiUrl.replace(/\/$/, "")}/v1/chat/completions`
     : "https://forge.manus.im/v1/chat/completions";
 
+// Manus's Forge proxy is unreachable outside the Manus platform. When no
+// Forge key is configured, fall back to calling Anthropic's API directly
+// using the same OpenAI-style request/response shape the rest of the app
+// already speaks, so no call sites need to change.
+const ANTHROPIC_API_URL = "https://api.anthropic.com/v1/messages";
+const ANTHROPIC_VERSION = "2023-06-01";
+const DEFAULT_ANTHROPIC_MODEL = "claude-sonnet-5";
+const DEFAULT_MAX_TOKENS = 4096;
+
+const useAnthropic = () => !ENV.forgeApiKey && Boolean(ENV.anthropicApiKey);
+
 const assertApiKey = () => {
-  if (!ENV.forgeApiKey) {
-    throw new Error("OPENAI_API_KEY is not configured");
+  if (!ENV.forgeApiKey && !ENV.anthropicApiKey) {
+    throw new Error("No LLM provider configured: set ANTHROPIC_API_KEY");
   }
+};
+
+const stripCodeFence = (text: string): string => {
+  const match = text.trim().match(/^```(?:json)?\s*([\s\S]*?)\s*```$/i);
+  return match ? match[1].trim() : text.trim();
+};
+
+const messageTextContent = (message: Message): string =>
+  ensureArray(message.content)
+    .map(part => {
+      if (typeof part === "string") return part;
+      if (part.type === "text") return part.text;
+      if (part.type === "image_url") return `[image: ${part.image_url.url}]`;
+      if (part.type === "file_url") return `[file: ${part.file_url.url}]`;
+      return "";
+    })
+    .join("\n");
+
+const buildAnthropicJsonInstruction = (
+  normalizedResponseFormat: ReturnType<typeof normalizeResponseFormat>
+): string | undefined => {
+  if (!normalizedResponseFormat) return undefined;
+  if (normalizedResponseFormat.type === "json_schema") {
+    return `You must respond with ONLY valid JSON matching this JSON schema, with no markdown code fences and no commentary:\n${JSON.stringify(
+      normalizedResponseFormat.json_schema.schema
+    )}`;
+  }
+  if (normalizedResponseFormat.type === "json_object") {
+    return "You must respond with ONLY valid JSON, with no markdown code fences and no commentary.";
+  }
+  return undefined;
+};
+
+const invokeAnthropic = async (
+  params: InvokeParams,
+  normalizedResponseFormat: ReturnType<typeof normalizeResponseFormat>
+): Promise<InvokeResult> => {
+  const systemParts = params.messages
+    .filter(m => m.role === "system")
+    .map(messageTextContent);
+
+  const jsonInstruction = buildAnthropicJsonInstruction(normalizedResponseFormat);
+  if (jsonInstruction) systemParts.push(jsonInstruction);
+
+  const anthropicMessages = params.messages
+    .filter(m => m.role !== "system")
+    .map(m => ({
+      role: m.role === "assistant" ? "assistant" : "user",
+      content: messageTextContent(m),
+    }));
+
+  const payload: Record<string, unknown> = {
+    model: params.model || DEFAULT_ANTHROPIC_MODEL,
+    max_tokens: params.max_tokens ?? params.maxTokens ?? DEFAULT_MAX_TOKENS,
+    messages: anthropicMessages,
+  };
+  if (systemParts.length > 0) {
+    payload.system = systemParts.join("\n\n");
+  }
+
+  const response = await fetchWithBackoff(ANTHROPIC_API_URL, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "x-api-key": ENV.anthropicApiKey,
+      "anthropic-version": ANTHROPIC_VERSION,
+    },
+    body: JSON.stringify(payload),
+  });
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    throw new Error(
+      `LLM invoke failed: ${response.status} ${response.statusText} – ${errorText}`
+    );
+  }
+
+  const anthropicResult = (await response.json()) as {
+    id: string;
+    model: string;
+    stop_reason: string | null;
+    content: Array<{ type: string; text?: string }>;
+    usage?: { input_tokens: number; output_tokens: number };
+  };
+
+  const text = anthropicResult.content
+    .filter(block => block.type === "text" && block.text)
+    .map(block => block.text)
+    .join("\n");
+
+  const finalText = normalizedResponseFormat ? stripCodeFence(text) : text;
+
+  return {
+    id: anthropicResult.id,
+    created: Math.floor(Date.now() / 1000),
+    model: anthropicResult.model,
+    choices: [
+      {
+        index: 0,
+        message: { role: "assistant", content: finalText },
+        finish_reason: anthropicResult.stop_reason,
+      },
+    ],
+    usage: anthropicResult.usage
+      ? {
+          prompt_tokens: anthropicResult.usage.input_tokens,
+          completion_tokens: anthropicResult.usage.output_tokens,
+          total_tokens:
+            anthropicResult.usage.input_tokens +
+            anthropicResult.usage.output_tokens,
+        }
+      : undefined,
+  };
 };
 
 const normalizeResponseFormat = ({
@@ -401,6 +525,10 @@ export async function invokeLLM(params: InvokeParams): Promise<InvokeResult> {
     payload.response_format = normalizedResponseFormat;
   }
 
+  if (useAnthropic()) {
+    return invokeAnthropic(params, normalizedResponseFormat);
+  }
+
   const response = await fetchWithBackoff(resolveApiUrl(), {
     method: "POST",
     headers: {
@@ -434,6 +562,36 @@ export type ModelsResponse = {
 
 export async function listLLMModels(): Promise<ModelsResponse> {
   assertApiKey();
+
+  if (useAnthropic()) {
+    const response = await fetchWithBackoff("https://api.anthropic.com/v1/models", {
+      headers: {
+        "x-api-key": ENV.anthropicApiKey,
+        "anthropic-version": ANTHROPIC_VERSION,
+      },
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error(
+        `List LLM models failed: ${response.status} ${response.statusText} – ${errorText}`
+      );
+    }
+
+    const anthropicModels = (await response.json()) as {
+      data: Array<{ id: string; created_at?: string; display_name?: string }>;
+    };
+
+    return {
+      object: "list",
+      data: anthropicModels.data.map(m => ({
+        id: m.id,
+        object: "model",
+        created: m.created_at ? Date.parse(m.created_at) / 1000 : 0,
+        owned_by: "anthropic",
+      })),
+    };
+  }
 
   const url = ENV.forgeApiUrl && ENV.forgeApiUrl.trim().length > 0
     ? `${ENV.forgeApiUrl.replace(/\/$/, "")}/v1/models`
