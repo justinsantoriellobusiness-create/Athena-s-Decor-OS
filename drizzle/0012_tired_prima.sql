@@ -1,0 +1,1 @@
+ALTER TABLE `autonomous_configs` MODIFY COLUMN `module` enum('email_scraper','email_campaigns','backlinker','blog','seo','site_audit','product_sourcing','inventory','ads','accounting','ai_code_assistant') NOT NULL;
