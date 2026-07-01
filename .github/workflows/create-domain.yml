@@ -7,26 +7,22 @@ jobs:
   create-domain:
     runs-on: ubuntu-latest
     steps:
-      - name: Install Railway CLI and create domain
+      - name: Create domain via GraphQL
         run: |
-          npm install -g @railway/cli 2>/dev/null
+          SERVICE_ID="f0ead486-176e-4541-98cb-325e83514298"
+          ENV_ID="2b72de05-138e-42e2-a8f6-0b9cb03aeed7"
 
-          echo "=== Railway CLI version ==="
-          railway --version || true
+          RESP=$(curl -s -X POST "https://backboard.railway.com/graphql/v2" \
+            -H "Authorization: Bearer $RAILWAY_TOKEN" \
+            -H "Content-Type: application/json" \
+            -d "{\"query\":\"mutation { serviceDomainCreate(input: { serviceId: \\\"$SERVICE_ID\\\", environmentId: \\\"$ENV_ID\\\" }) { id domain } }\"}")
+          echo "Response: $RESP"
 
-          echo "=== Linking project ==="
-          railway link --project "$RAILWAY_PROJECT_ID" 2>&1 || true
-
-          echo "=== Railway status ==="
-          railway status 2>&1 || true
-
-          echo "=== Railway status JSON ==="
-          railway status --json 2>&1 || true
-
-          echo "=== Creating domain ==="
-          railway domain 2>&1 || true
-
-          echo "=== Done ==="
+          DOMAIN=$(echo "$RESP" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['data']['serviceDomainCreate']['domain'])" 2>/dev/null || echo "")
+          if [ -n "$DOMAIN" ]; then
+            echo "SUCCESS: https://$DOMAIN"
+          else
+            echo "Note: $RESP"
+          fi
         env:
           RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
-          RAILWAY_PROJECT_ID: ${{ secrets.RAILWAY_PROJECT_ID }}
