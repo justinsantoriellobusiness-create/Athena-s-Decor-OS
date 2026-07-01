@@ -634,7 +634,7 @@ export default function SourcingPage() {
   );
 }
 
-// ── App Connection Card ──────────────────────────────────────────────────────────────────
+// ── App Connection Card ──────────────────────────────────────────────────────
 function AppConnectionCard({
   app, title, description, icon, isConnected, fields, onRefetch,
 }: {
