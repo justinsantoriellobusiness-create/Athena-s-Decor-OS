@@ -1,0 +1,23 @@
+name: Get Railway Logs
+
+on:
+  workflow_dispatch: {}
+
+jobs:
+  get-logs:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Get deployment logs
+        run: |
+          npm install -g @railway/cli 2>/dev/null
+
+          SERVICE_ID="f0ead486-176e-4541-98cb-325e83514298"
+          DEPLOY_ID="54bd08db-c389-45b3-a314-4caa7d3856c6"
+
+          echo "=== Recent deployment logs ==="
+          railway logs --service "$SERVICE_ID" --deployment "$DEPLOY_ID" 2>&1 || true
+
+          echo "=== Latest logs ==="
+          railway logs --service "$SERVICE_ID" 2>&1 || true
+        env:
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
