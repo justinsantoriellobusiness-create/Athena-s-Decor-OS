@@ -632,3 +632,91 @@ export const campaignProducts = mysqlTable("campaign_products", {
   createdAt: timestamp("createdAt").defaultNow().notNull(),
 });
 export type CampaignProduct = typeof campaignProducts.$inferSelect;
+
+// ─── Wix 360 Integration ──────────────────────────────────────────────────────
+export const wixConfig = mysqlTable("wix_config", {
+  id: int("id").autoincrement().primaryKey(),
+  userId: int("userId").notNull(),
+  accountId: varchar("accountId", { length: 255 }).notNull(),
+  apiKey: text("apiKey").notNull(),  // encrypted
+  siteUrl: varchar("siteUrl", { length: 512 }).notNull(),
+  isConnected: boolean("isConnected").default(false).notNull(),
+  productCount: int("productCount").default(0).notNull(),
+  orderCount: int("orderCount").default(0).notNull(),
+  customerCount: int("customerCount").default(0).notNull(),
+  lastSyncAt: timestamp("lastSyncAt"),
+  lastSyncStatus: mysqlEnum("lastSyncStatus", ["success", "failed", "pending"]).default("pending"),
+  connectedAt: timestamp("connectedAt").defaultNow().notNull(),
+  updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+});
+export type WixConfig = typeof wixConfig.$inferSelect;
+
+export const wixProducts = mysqlTable("wix_products", {
+  id: int("id").autoincrement().primaryKey(),
+  userId: int("userId").notNull(),
+  wixId: varchar("wixId", { length: 255 }).notNull(),
+  title: varchar("title", { length: 512 }).notNull(),
+  description: text("description"),
+  price: varchar("price", { length: 64 }),
+  inventory: int("inventory").default(0),
+  imageUrl: text("imageUrl"),
+  shopifyProductId: varchar("shopifyProductId", { length: 128 }),
+  lastSyncedAt: timestamp("lastSyncedAt"),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+  updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+});
+export type WixProduct = typeof wixProducts.$inferSelect;
+
+export const wixOrders = mysqlTable("wix_orders", {
+  id: int("id").autoincrement().primaryKey(),
+  userId: int("userId").notNull(),
+  wixId: varchar("wixId", { length: 255 }).notNull(),
+  customerId: varchar("customerId", { length: 255 }),
+  total: varchar("total", { length: 64 }).notNull(),
+  status: mysqlEnum("status", ["pending", "processing", "completed", "cancelled", "refunded"]).default("pending").notNull(),
+  items: json("items"),  // array of {productId, title, quantity, price}
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+  syncedAt: timestamp("syncedAt"),
+});
+export type WixOrder = typeof wixOrders.$inferSelect;
+
+export const wixAnalytics = mysqlTable("wix_analytics", {
+  id: int("id").autoincrement().primaryKey(),
+  userId: int("userId").notNull(),
+  recordedAt: timestamp("recordedAt").defaultNow().notNull(),
+  visitors: int("visitors").default(0),
+  pageViews: int("pageViews").default(0),
+  conversions: int("conversions").default(0),
+  revenue: varchar("revenue", { length: 64 }).default("0"),
+  averageOrderValue: varchar("averageOrderValue", { length: 64 }).default("0"),
+  conversionRate: varchar("conversionRate", { length: 64 }).default("0"),
+  syncedAt: timestamp("syncedAt").defaultNow().notNull(),
+});
+export type WixAnalytics = typeof wixAnalytics.$inferSelect;
+
+// ─── Zapier Integration ───────────────────────────────────────────────────────
+export const zapierConfig = mysqlTable("zapier_config", {
+  id: int("id").autoincrement().primaryKey(),
+  userId: int("userId").notNull(),
+  apiKey: text("apiKey").notNull(),  // encrypted
+  isConnected: boolean("isConnected").default(false).notNull(),
+  webhookUrl: text("webhookUrl"),
+  connectedPlatforms: text("connectedPlatforms"),  // JSON array of connected platforms
+  lastSyncAt: timestamp("lastSyncAt"),
+  connectedAt: timestamp("connectedAt").defaultNow().notNull(),
+  updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+});
+export type ZapierConfig = typeof zapierConfig.$inferSelect;
+
+export const zapierWebhooks = mysqlTable("zapier_webhooks", {
+  id: int("id").autoincrement().primaryKey(),
+  userId: int("userId").notNull(),
+  zapId: varchar("zapId", { length: 255 }).notNull(),
+  name: varchar("name", { length: 255 }).notNull(),
+  trigger: varchar("trigger", { length: 128 }).notNull(),  // e.g., "shopify.new_order"
+  action: varchar("action", { length: 128 }).notNull(),  // e.g., "accounting.create_transaction"
+  isActive: boolean("isActive").default(true).notNull(),
+  lastTriggeredAt: timestamp("lastTriggeredAt"),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+});
+export type ZapierWebhook = typeof zapierWebhooks.$inferSelect;
