@@ -67,14 +67,16 @@ jobs:
           fi
 
           echo "Found $(echo "$SERVICE_IDS" | wc -l) service(s), environment $ENV_ID"
+          export ENV_ID
 
           PUBLIC_DB_URL=""
           FOUND_VAR_NAME=""
 
           for SID in $SERVICE_IDS; do
+            export SID
             VARS_JSON=$(gql "$(node -e "
-              const q = \`query(\\\$p:String!,\\\$e:String!,\\\$s:String!){ variables(projectId:\\\$p,environmentId:\\\$e,serviceId:\\\$s) }\`;
-              console.log(JSON.stringify({ query: q, variables: { p: process.env.RAILWAY_PROJECT_ID, e: process.env.ENV_ID, s: '$SID' } }));
+              const q = 'query(\$p:String!,\$e:String!,\$s:String!){ variables(projectId:\$p,environmentId:\$e,serviceId:\$s) }';
+              console.log(JSON.stringify({ query: q, variables: { p: process.env.RAILWAY_PROJECT_ID, e: process.env.ENV_ID, s: process.env.SID } }));
             ")")
 
             LINE=$(echo "$VARS_JSON" | node -e '
