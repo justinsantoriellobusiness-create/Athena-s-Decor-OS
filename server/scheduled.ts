@@ -7,7 +7,9 @@ import { Router, Request, Response, NextFunction } from "express";
 import { sdk } from "./_core/sdk";
 import { invokeLLM } from "./_core/llm";
 import { generateImage } from "./_core/imageGeneration";
+import { sendEmail, isEmailConfigured } from "./_core/email";
 import { storagePut } from "./storage";
+import { sleep } from "./rateLimiter";
 import {
   getShopifyConfig,
   getAllAutomationSettings,
@@ -34,9 +36,13 @@ import {
   updateProspectScrapJob,
   getBacklinkCampaigns,
   insertBacklinkOpportunities,
+  getAdCampaigns,
+  updateAdCampaign,
 } from "./db";
 import { getShopifyClient } from "./shopify";
-import { decryptCredential } from "./crypto";
+import { decryptCredential, decryptCredentials } from "./crypto";
+import { fetchPayPalTransactions } from "./_core/paypal";
+import { fetchEbayTransactions } from "./_core/ebay";
 import { notifyOwner } from "./_core/notification";
 import { ENV } from "./_core/env";
 import { INTERNAL_CRON_SECRET_HEADER } from "./_core/scheduler";
@@ -170,12 +176,40 @@ export function registerScheduledRoutes(app: Router) {
     }
   });
 
-  // Ads automation
+  // Ads automation: re-run AI budget optimization for every active campaign
+  // with performance data. Does NOT push spend changes to any ad platform —
+  // no ad platform posting is wired up (see PROJECT_HANDOFF_CLAUDE.md) — this
+  // only updates the recommended budget stored in our own database.
   app.post("/api/scheduled/ads", cronAuth, async (req, res) => {
     const setting = (await getAllAutomationSettings()).find(s => s.module === "ads");
     if (!setting?.enabled) return res.json({ skipped: true });
-    await updateAutomationSetting("ads", { lastRunAt: new Date(), lastRunStatus: "success" });
-    res.json({ success: true, message: "Ad optimization check complete" });
+    try {
+      const campaigns = await getAdCampaigns();
+      const active = campaigns.filter((c: any) => c.status === "active" && c.impressions > 0);
+      let optimized = 0;
+      for (const campaign of active) {
+        try {
+          const response = await invokeLLM({
+            messages: [
+              { role: "system", content: "You are a performance marketing optimization expert. Return structured JSON only." },
+              { role: "user", content: `Analyze this ad campaign and recommend budget optimization:\nCampaign: ${campaign.name}\nPlatform: ${campaign.platform}\nDaily Budget: $${campaign.dailyBudget}\nROAS: ${campaign.roas}\nCTR: ${campaign.ctr}%\nCPC: $${campaign.cpc}\nImpressions: ${campaign.impressions}\nClicks: ${campaign.clicks}\nConversions: ${campaign.conversions}\n\nReturn JSON: { "recommendedDailyBudget": number, "reasoning": string, "actions": string[] }` },
+            ],
+            response_format: { type: "json_schema", json_schema: { name: "budget_optimization", strict: true, schema: { type: "object", properties: { recommendedDailyBudget: { type: "number" }, reasoning: { type: "string" }, actions: { type: "array", items: { type: "string" } } }, required: ["recommendedDailyBudget", "reasoning", "actions"], additionalProperties: false } } },
+          });
+          const raw = response.choices[0]?.message?.content;
+          const result = JSON.parse(typeof raw === "string" ? raw : "{}");
+          await updateAdCampaign(campaign.id, { dailyBudget: result.recommendedDailyBudget, lastOptimizedAt: new Date() });
+          optimized++;
+        } catch (err: any) {
+          console.warn(`[Ads] Budget optimization failed for campaign ${campaign.id}:`, err.message);
+        }
+      }
+      await updateAutomationSetting("ads", { lastRunAt: new Date(), lastRunStatus: "success" });
+      res.json({ success: true, message: `Optimized ${optimized} of ${active.length} active campaigns`, optimized });
+    } catch (err: any) {
+      await updateAutomationSetting("ads", { lastRunAt: new Date(), lastRunStatus: "error" });
+      res.status(500).json({ error: err.message });
+    }
   });
 
   // ─── Accounting: Daily auto-sync all connected accounts ────────────────────
@@ -211,8 +245,70 @@ export function registerScheduledRoutes(app: Router) {
               imported = r.inserted; skipped = r.skipped; flagged = r.flagged;
             }
           }
-          // eBay and PayPal: placeholder — real API sync activates when user provides credentials
-          // The UI shows "Connect" button which stores credentials, then this endpoint uses them
+          if (account.provider === "paypal" && account.credentials) {
+            const creds = decryptCredentials(account.credentials as Record<string, string>);
+            const since = account.lastSyncedAt ? new Date(account.lastSyncedAt) : new Date(Date.now() - 30 * 24 * 3600 * 1000);
+            const paypalTxns = await fetchPayPalTransactions(creds, since);
+            const txns = paypalTxns.map(t => ({
+              accountId: account.id,
+              date: t.date,
+              description: t.description,
+              amount: t.amount,
+              type: (t.amount < 0 ? "fee" : "income") as "fee" | "income",
+              category: (t.amount < 0 ? "payment_processing" : "product_sales") as "payment_processing" | "product_sales",
+              source: "paypal" as const,
+              taxDeductible: t.amount < 0,
+              taxCategory: t.amount < 0 ? "Schedule C Line 10" : "Schedule C Line 1",
+              externalId: t.externalId,
+              isReconciled: false,
+            }));
+            if (txns.length > 0) {
+              const r = await insertTransactions(txns);
+              imported = r.inserted; skipped = r.skipped; flagged = r.flagged;
+            }
+          }
+
+          if (account.provider === "ebay" && account.credentials) {
+            const creds = decryptCredentials(account.credentials as Record<string, string>);
+            const since = account.lastSyncedAt ? new Date(account.lastSyncedAt) : new Date(Date.now() - 30 * 24 * 3600 * 1000);
+            const ebayTxns = await fetchEbayTransactions(creds, since);
+            const txns = ebayTxns.flatMap(t => {
+              const rows: any[] = [{
+                accountId: account.id,
+                date: t.date,
+                description: t.description,
+                amount: t.amount,
+                type: "income" as const,
+                category: "product_sales" as const,
+                source: "ebay" as const,
+                taxDeductible: false,
+                taxCategory: "Schedule C Line 1",
+                externalId: t.externalId,
+                orderId: t.orderId,
+                isReconciled: false,
+              }];
+              if (t.feeAmount > 0) {
+                rows.push({
+                  accountId: account.id,
+                  date: t.date,
+                  description: `eBay fee — ${t.description}`,
+                  amount: -t.feeAmount,
+                  type: "fee" as const,
+                  category: "platform_fees" as const,
+                  source: "ebay" as const,
+                  taxDeductible: true,
+                  taxCategory: "Schedule C Line 10",
+                  externalId: `${t.externalId}-fee`,
+                  isReconciled: false,
+                });
+              }
+              return rows;
+            });
+            if (txns.length > 0) {
+              const r = await insertTransactions(txns);
+              imported = r.inserted; skipped = r.skipped; flagged = r.flagged;
+            }
+          }
 
           await updateFinancialAccount(account.id, { lastSyncedAt: new Date() });
           results.push({ account: account.name, imported, skipped, flagged });
@@ -287,13 +383,23 @@ export function registerScheduledRoutes(app: Router) {
         const aiResp = await invokeLLM({ messages: [{ role: "system", content: "You are an expert email marketer for a premium home decor brand." }, { role: "user", content: `Write a compelling ${campaignType} email for a home decor store. Subject: "${subject}". Include: warm greeting, 2-3 product highlights with emotional storytelling, clear CTA button, and unsubscribe note. Return JSON: { subject, previewText, bodyHtml, bodyText }` }], response_format: { type: "json_schema", json_schema: { name: "email", strict: true, schema: { type: "object", properties: { subject: { type: "string" }, previewText: { type: "string" }, bodyHtml: { type: "string" }, bodyText: { type: "string" } }, required: ["subject","previewText","bodyHtml","bodyText"], additionalProperties: false } } } });
         const emailContent = JSON.parse(typeof aiResp.choices[0].message.content === "string" ? aiResp.choices[0].message.content : JSON.stringify(aiResp.choices[0].message.content));
         const campaign = await createEmailCampaign({ userId: config.userId, name: `Auto Campaign ${new Date().toLocaleDateString()}`, ...emailContent, type: campaignType as any, status: "sent", sentAt: new Date(), automationEnabled: false, frequencyDays: 30, totalSent: 0, totalDelivered: 0, totalOpened: 0, totalClicked: 0, totalBounced: 0, totalUnsubscribed: 0 });
+        let batchDelivered = 0;
         for (const prospect of newProspects) {
-          await insertEmailEvent({ campaignId: campaign.id, prospectId: prospect.id, userId: config.userId, event: "sent", clickUrl: null, userAgent: null, ipAddress: null });
-          await updateEmailProspect(prospect.id, { lastContactedAt: new Date() });
+          const sendResult = isEmailConfigured()
+            ? await sendEmail({ to: prospect.email, subject: emailContent.subject, html: emailContent.bodyHtml, text: emailContent.bodyText })
+            : { success: false as const, error: "RESEND_API_KEY not configured" };
+          await insertEmailEvent({ campaignId: campaign.id, prospectId: prospect.id, userId: config.userId, event: sendResult.success ? "sent" : "bounced", clickUrl: null, userAgent: null, ipAddress: null });
+          if (sendResult.success) {
+            batchDelivered++;
+            await updateEmailProspect(prospect.id, { lastContactedAt: new Date() });
+          } else {
+            console.warn(`[AutoEmailCampaign] Failed to send to ${prospect.email}: ${sendResult.error}`);
+          }
+          await sleep(150);
         }
-        await updateEmailCampaign(campaign.id, { totalSent: newProspects.length, totalDelivered: newProspects.length });
+        await updateEmailCampaign(campaign.id, { totalSent: batchDelivered, totalDelivered: batchDelivered });
         await upsertAutonomousConfig(config.userId, "email_campaigns", { lastAutoRunAt: new Date(), nextAutoRunAt: new Date(Date.now() + config.frequencyHours * 3600000) });
-        totalSent += newProspects.length;
+        totalSent += batchDelivered;
       }
       res.json({ success: true, totalSent });
     } catch (err: any) {

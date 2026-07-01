@@ -845,10 +845,12 @@ function AccountsTab() {
   const [addOpen, setAddOpen] = useState(false);
   type AccountProvider = "shopify"|"paypal"|"ebay"|"stripe"|"bank"|"credit_card"|"amazon"|"etsy"|"dsers"|"cj_dropshipping"|"facebook_ads"|"google_ads"|"tiktok_ads"|"other";
   type AccountType = "revenue"|"expense"|"bank"|"credit_card"|"marketplace"|"ad_platform"|"payment_processor";
-  const [form, setForm] = useState<{ name: string; provider: AccountProvider; accountType: AccountType; currency: string; notes: string }>({ name: "", provider: "shopify", accountType: "revenue", currency: "USD", notes: "" });
+  const [form, setForm] = useState<{ name: string; provider: AccountProvider; accountType: AccountType; currency: string; notes: string; credentials: Record<string, string> }>({ name: "", provider: "shopify", accountType: "revenue", currency: "USD", notes: "", credentials: {} });
+  const [credsAccountId, setCredsAccountId] = useState<number | null>(null);
+  const [credsForm, setCredsForm] = useState<Record<string, string>>({});
 
   const addMutation = trpc.accounting.addAccount.useMutation({
-    onSuccess: () => { toast.success("Account added"); setAddOpen(false); refetch(); },
+    onSuccess: () => { toast.success("Account added"); setAddOpen(false); setForm(f => ({ ...f, credentials: {} })); refetch(); },
     onError: (e) => toast.error(e.message),
   });
 
@@ -861,9 +863,33 @@ function AccountsTab() {
     onError: (e) => toast.error(e.message),
   });
 
-  const updateMutation = trpc.accounting.updateAccount.useMutation({
-    onSuccess: () => refetch(),
+  const syncPayPalMutation = trpc.accounting.syncPayPal.useMutation({
+    onSuccess: (r) => { toast.success(`Synced ${r.imported} PayPal transactions`); refetch(); },
+    onError: (e) => toast.error(e.message),
   });
+
+  const syncEbayMutation = trpc.accounting.syncEbay.useMutation({
+    onSuccess: (r) => { toast.success(`Synced ${r.imported} eBay transactions`); refetch(); },
+    onError: (e) => toast.error(e.message),
+  });
+
+  const updateMutation = trpc.accounting.updateAccount.useMutation({
+    onSuccess: () => { toast.success("Credentials saved"); setCredsAccountId(null); refetch(); },
+    onError: (e) => toast.error(e.message),
+  });
+
+  // Field sets for providers whose sync actually uses stored credentials.
+  const CREDENTIAL_FIELDS: Partial<Record<AccountProvider, Array<{ key: string; label: string; placeholder?: string }>>> = {
+    paypal: [
+      { key: "clientId", label: "Client ID" },
+      { key: "clientSecret", label: "Client Secret" },
+    ],
+    ebay: [
+      { key: "clientId", label: "Client ID (App ID)" },
+      { key: "clientSecret", label: "Client Secret (Cert ID)" },
+      { key: "refreshToken", label: "Refresh Token", placeholder: "Obtained once via eBay's OAuth consent flow" },
+    ],
+  };
 
   const PROVIDER_SUGGESTIONS: Array<{ provider: AccountProvider; accountType: AccountType; name: string; desc: string }> = [
     { provider: "shopify", accountType: "revenue", name: "Shopify Store", desc: "Sales revenue, refunds, payment fees" },
@@ -917,6 +943,27 @@ function AccountsTab() {
                   </SelectContent>
                 </Select>
               </div>
+              {CREDENTIAL_FIELDS[form.provider] && (
+                <div className="space-y-2 p-3 rounded-lg bg-white/5 border border-white/10">
+                  <p className="text-xs text-white/50">
+                    {form.provider === "ebay"
+                      ? "Create a keyset at developer.ebay.com, then run eBay's OAuth consent flow once to get a refresh token."
+                      : "Create a REST API app at developer.paypal.com for your own account."}
+                  </p>
+                  {CREDENTIAL_FIELDS[form.provider]!.map(f => (
+                    <div key={f.key}>
+                      <Label className="text-xs text-white/50">{f.label}</Label>
+                      <Input
+                        type="password"
+                        value={form.credentials[f.key] ?? ""}
+                        onChange={e => setForm(fm => ({ ...fm, credentials: { ...fm.credentials, [f.key]: e.target.value } }))}
+                        className="bg-white/5 border-white/10 text-white"
+                        placeholder={f.placeholder}
+                      />
+                    </div>
+                  ))}
+                </div>
+              )}
               <div>
                 <Label className="text-xs text-white/50">Notes</Label>
                 <Input value={form.notes} onChange={e => setForm(f => ({ ...f, notes: e.target.value }))} className="bg-white/5 border-white/10 text-white" placeholder="Optional notes" />
@@ -924,7 +971,7 @@ function AccountsTab() {
               <Button
                 className="w-full bg-amber-500 hover:bg-amber-600 text-black"
                 disabled={addMutation.isPending || !form.name}
-                onClick={() => addMutation.mutate(form)}
+                onClick={() => addMutation.mutate({ ...form, credentials: Object.keys(form.credentials).length > 0 ? form.credentials : undefined })}
               >
                 {addMutation.isPending ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : null}
                 Add Account
@@ -943,7 +990,7 @@ function AccountsTab() {
               <button
                 key={s.provider}
                 className="flex items-start gap-3 p-3 rounded-lg bg-white/5 hover:bg-white/10 transition-colors text-left border border-white/5 hover:border-white/20"
-                onClick={() => { setForm({ name: s.name, provider: s.provider, accountType: s.accountType, currency: "USD", notes: "" }); setAddOpen(true); }}
+                onClick={() => { setForm({ name: s.name, provider: s.provider, accountType: s.accountType, currency: "USD", notes: "", credentials: {} }); setAddOpen(true); }}
               >
                 <span className="text-2xl">{PROVIDER_ICONS[s.provider]}</span>
                 <div>
@@ -993,6 +1040,32 @@ function AccountsTab() {
                       Sync Orders
                     </Button>
                   )}
+                  {(a.provider === "paypal" || a.provider === "ebay") && CREDENTIAL_FIELDS[a.provider] && (
+                    <>
+                      {a.hasCredentials ? (
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          className="border-white/20 text-white/70 hover:bg-white/10 text-xs"
+                          disabled={a.provider === "paypal" ? syncPayPalMutation.isPending : syncEbayMutation.isPending}
+                          onClick={() => a.provider === "paypal" ? syncPayPalMutation.mutate({ accountId: a.id }) : syncEbayMutation.mutate({ accountId: a.id })}
+                        >
+                          {(a.provider === "paypal" ? syncPayPalMutation.isPending : syncEbayMutation.isPending)
+                            ? <Loader2 className="w-3 h-3 animate-spin mr-1" /> : <RefreshCw className="w-3 h-3 mr-1" />}
+                          Sync Transactions
+                        </Button>
+                      ) : (
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          className="border-amber-500/30 text-amber-400 hover:bg-amber-500/10 text-xs"
+                          onClick={() => { setCredsAccountId(a.id); setCredsForm({}); }}
+                        >
+                          Add Credentials
+                        </Button>
+                      )}
+                    </>
+                  )}
                   <Switch
                     checked={a.isActive}
                     onCheckedChange={v => updateMutation.mutate({ id: a.id, isActive: v })}
@@ -1006,6 +1079,47 @@ function AccountsTab() {
           ))}
         </div>
       ) : null}
+
+      {/* Add/update credentials for an existing PayPal or eBay account */}
+      <Dialog open={credsAccountId !== null} onOpenChange={open => !open && setCredsAccountId(null)}>
+        <DialogContent className="bg-[#0f0f1a] border-white/10 text-white max-w-md">
+          <DialogHeader><DialogTitle>Connect Account</DialogTitle></DialogHeader>
+          {(() => {
+            const account = accounts?.find(a => a.id === credsAccountId);
+            if (!account) return null;
+            const fields = CREDENTIAL_FIELDS[account.provider as AccountProvider] ?? [];
+            return (
+              <div className="space-y-3">
+                <p className="text-xs text-white/50">
+                  {account.provider === "ebay"
+                    ? "Create a keyset at developer.ebay.com, then run eBay's OAuth consent flow once to get a refresh token."
+                    : "Create a REST API app at developer.paypal.com for your own account."}
+                </p>
+                {fields.map(f => (
+                  <div key={f.key}>
+                    <Label className="text-xs text-white/50">{f.label}</Label>
+                    <Input
+                      type="password"
+                      value={credsForm[f.key] ?? ""}
+                      onChange={e => setCredsForm(cf => ({ ...cf, [f.key]: e.target.value }))}
+                      className="bg-white/5 border-white/10 text-white"
+                      placeholder={f.placeholder}
+                    />
+                  </div>
+                ))}
+                <Button
+                  className="w-full bg-amber-500 hover:bg-amber-600 text-black"
+                  disabled={updateMutation.isPending || fields.some(f => !credsForm[f.key])}
+                  onClick={() => updateMutation.mutate({ id: account.id, credentials: credsForm })}
+                >
+                  {updateMutation.isPending ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : null}
+                  Save Credentials
+                </Button>
+              </div>
+            );
+          })()}
+        </DialogContent>
+      </Dialog>
 
       {/* Instructions */}
       <Card className="bg-white/5 border-amber-500/20 border">

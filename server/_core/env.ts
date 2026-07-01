@@ -19,4 +19,15 @@ export const ENV = {
   WIX_ACCOUNT_ID: process.env.WIX_ACCOUNT_ID ?? "",
   adminEmail: process.env.ADMIN_EMAIL ?? "",
   adminPassword: process.env.ADMIN_PASSWORD ?? "",
+  // File storage: any S3-compatible bucket (AWS S3, Cloudflare R2, Backblaze B2, etc).
+  s3Bucket: process.env.S3_BUCKET_NAME ?? "",
+  s3Region: process.env.S3_REGION ?? "auto",
+  s3AccessKeyId: process.env.S3_ACCESS_KEY_ID ?? "",
+  s3SecretAccessKey: process.env.S3_SECRET_ACCESS_KEY ?? "",
+  s3Endpoint: process.env.S3_ENDPOINT ?? "",
+  // AI image generation (blog featured images, ad creatives).
+  openaiApiKey: process.env.OPENAI_API_KEY ?? "",
+  // Outbound transactional/marketing email delivery.
+  resendApiKey: process.env.RESEND_API_KEY ?? "",
+  emailFrom: process.env.EMAIL_FROM ?? "",
 };

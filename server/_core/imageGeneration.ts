@@ -1,19 +1,7 @@
 /**
- * Image generation helper using internal ImageService
- *
- * Example usage:
- *   const { url: imageUrl } = await generateImage({
- *     prompt: "A serene landscape with mountains"
- *   });
- *
- * For editing:
- *   const { url: imageUrl } = await generateImage({
- *     prompt: "Add a rainbow to this landscape",
- *     originalImages: [{
- *       url: "https://example.com/original.jpg",
- *       mimeType: "image/jpeg"
- *     }]
- *   });
+ * AI image generation via OpenAI's Images API (gpt-image-1). Requires
+ * OPENAI_API_KEY — Anthropic does not offer image generation, so unlike
+ * invokeLLM() there is no same-vendor fallback here.
  */
 import { storagePut } from "server/storage";
 import { ENV } from "./env";
@@ -31,42 +19,19 @@ export type GenerateImageResponse = {
   url?: string;
 };
 
-export async function generateImage(
-  options: GenerateImageOptions
-): Promise<GenerateImageResponse> {
-  if (!ENV.forgeApiUrl || !ENV.forgeApiKey) {
-    // Anthropic's API does not offer image generation, so there is no
-    // fallback provider here the way invokeLLM falls back for text.
-    // An image-generation API key (e.g. OpenAI/DALL-E, Stability, Replicate)
-    // must be configured before this feature can work.
+const OPENAI_IMAGES_URL = "https://api.openai.com/v1/images/generations";
+const OPENAI_IMAGE_EDITS_URL = "https://api.openai.com/v1/images/edits";
+const MODEL = "gpt-image-1";
+
+function assertConfigured() {
+  if (!ENV.openaiApiKey) {
     throw new Error(
-      "No image generation provider is configured. This feature requires a separate image-generation API key (Anthropic does not provide one)."
+      "No image generation provider is configured. Set OPENAI_API_KEY to enable AI image generation (Anthropic does not offer one)."
     );
   }
+}
 
-  // Build the full URL by appending the service path to the base URL
-  const baseUrl = ENV.forgeApiUrl.endsWith("/")
-    ? ENV.forgeApiUrl
-    : `${ENV.forgeApiUrl}/`;
-  const fullUrl = new URL(
-    "images.v1.ImageService/GenerateImage",
-    baseUrl
-  ).toString();
-
-  const response = await fetch(fullUrl, {
-    method: "POST",
-    headers: {
-      accept: "application/json",
-      "content-type": "application/json",
-      "connect-protocol-version": "1",
-      authorization: `Bearer ${ENV.forgeApiKey}`,
-    },
-    body: JSON.stringify({
-      prompt: options.prompt,
-      original_images: options.originalImages || [],
-    }),
-  });
-
+async function extractImageBuffer(response: Response): Promise<{ buffer: Buffer; mimeType: string }> {
   if (!response.ok) {
     const detail = await response.text().catch(() => "");
     throw new Error(
@@ -75,21 +40,67 @@ export async function generateImage(
   }
 
   const result = (await response.json()) as {
-    image: {
-      b64Json: string;
-      mimeType: string;
-    };
+    data: Array<{ b64_json?: string; url?: string }>;
   };
-  const base64Data = result.image.b64Json;
-  const buffer = Buffer.from(base64Data, "base64");
+  const item = result.data?.[0];
+  if (!item) throw new Error("Image generation returned no results");
 
-  // Save to S3
-  const { url } = await storagePut(
-    `generated/${Date.now()}.png`,
-    buffer,
-    result.image.mimeType
-  );
-  return {
-    url,
-  };
+  if (item.b64_json) {
+    return { buffer: Buffer.from(item.b64_json, "base64"), mimeType: "image/png" };
+  }
+  if (item.url) {
+    const imgRes = await fetch(item.url);
+    if (!imgRes.ok) throw new Error(`Failed to fetch generated image (${imgRes.status})`);
+    return { buffer: Buffer.from(await imgRes.arrayBuffer()), mimeType: "image/png" };
+  }
+  throw new Error("Image generation response had neither b64_json nor url");
+}
+
+export async function generateImage(
+  options: GenerateImageOptions
+): Promise<GenerateImageResponse> {
+  assertConfigured();
+
+  const sourceImage = options.originalImages?.find(img => img.url || img.b64Json);
+  let buffer: Buffer;
+  let mimeType: string;
+
+  if (sourceImage) {
+    const sourceBuffer = sourceImage.b64Json
+      ? Buffer.from(sourceImage.b64Json, "base64")
+      : Buffer.from(await (await fetch(sourceImage.url!)).arrayBuffer());
+
+    const form = new FormData();
+    form.set("model", MODEL);
+    form.set("prompt", options.prompt);
+    form.set(
+      "image",
+      new Blob([sourceBuffer], { type: sourceImage.mimeType || "image/png" }),
+      "source.png"
+    );
+
+    const response = await fetch(OPENAI_IMAGE_EDITS_URL, {
+      method: "POST",
+      headers: { authorization: `Bearer ${ENV.openaiApiKey}` },
+      body: form,
+    });
+    ({ buffer, mimeType } = await extractImageBuffer(response));
+  } else {
+    const response = await fetch(OPENAI_IMAGES_URL, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: `Bearer ${ENV.openaiApiKey}`,
+      },
+      body: JSON.stringify({
+        model: MODEL,
+        prompt: options.prompt,
+        size: "1024x1024",
+      }),
+    });
+    ({ buffer, mimeType } = await extractImageBuffer(response));
+  }
+
+  const { url } = await storagePut(`generated/${Date.now()}.png`, buffer, mimeType);
+  return { url };
 }

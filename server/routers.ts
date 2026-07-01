@@ -7,6 +7,9 @@ import { TRPCError } from "@trpc/server";
 import { encryptCredentials, decryptCredentials, maskCredential } from "./crypto";
 import { invokeLLM } from "./_core/llm";
 import { generateImage } from "./_core/imageGeneration";
+import { sendEmail, isEmailConfigured } from "./_core/email";
+import { fetchPayPalTransactions } from "./_core/paypal";
+import { fetchEbayTransactions } from "./_core/ebay";
 import { storagePut } from "./storage";
 import {
   getShopifyConfig,
@@ -2039,6 +2042,83 @@ const accountingRouter = router({
       return { success: true, imported: txns.length, orders: orders.length };
     }),
 
+  syncPayPal: protectedProcedure
+    .input(z.object({ accountId: z.number() }))
+    .mutation(async ({ input }) => {
+      const account = await getFinancialAccountById(input.accountId);
+      if (!account) throw new TRPCError({ code: "NOT_FOUND" });
+      if (!account.credentials) throw new TRPCError({ code: "BAD_REQUEST", message: "Add your PayPal Client ID and Secret to this account first." });
+
+      const creds = decryptCredentials(account.credentials as Record<string, string>);
+      const since = account.lastSyncedAt ? new Date(account.lastSyncedAt) : new Date(Date.now() - 30 * 24 * 3600 * 1000);
+      const paypalTxns = await fetchPayPalTransactions(creds, since);
+
+      const txns = paypalTxns.map(t => ({
+        accountId: input.accountId,
+        date: t.date,
+        description: t.description,
+        amount: t.amount,
+        type: (t.amount < 0 ? "fee" : "income") as "fee" | "income",
+        category: (t.amount < 0 ? "payment_processing" : "product_sales") as "payment_processing" | "product_sales",
+        source: "paypal" as const,
+        taxDeductible: t.amount < 0,
+        taxCategory: t.amount < 0 ? "Schedule C Line 10" : "Schedule C Line 1",
+        externalId: t.externalId,
+        isReconciled: false,
+      }));
+      const r = txns.length > 0 ? await insertTransactions(txns) : { inserted: 0, skipped: 0, flagged: 0 };
+      await updateFinancialAccount(input.accountId, { lastSyncedAt: new Date(), isConnected: true });
+      return { success: true, imported: r.inserted, skipped: r.skipped, flagged: r.flagged };
+    }),
+
+  syncEbay: protectedProcedure
+    .input(z.object({ accountId: z.number() }))
+    .mutation(async ({ input }) => {
+      const account = await getFinancialAccountById(input.accountId);
+      if (!account) throw new TRPCError({ code: "NOT_FOUND" });
+      if (!account.credentials) throw new TRPCError({ code: "BAD_REQUEST", message: "Add your eBay Client ID, Secret, and Refresh Token to this account first." });
+
+      const creds = decryptCredentials(account.credentials as Record<string, string>);
+      const since = account.lastSyncedAt ? new Date(account.lastSyncedAt) : new Date(Date.now() - 30 * 24 * 3600 * 1000);
+      const ebayTxns = await fetchEbayTransactions(creds, since);
+
+      const txns = ebayTxns.flatMap(t => {
+        const rows: any[] = [{
+          accountId: input.accountId,
+          date: t.date,
+          description: t.description,
+          amount: t.amount,
+          type: "income" as const,
+          category: "product_sales" as const,
+          source: "ebay" as const,
+          taxDeductible: false,
+          taxCategory: "Schedule C Line 1",
+          externalId: t.externalId,
+          orderId: t.orderId,
+          isReconciled: false,
+        }];
+        if (t.feeAmount > 0) {
+          rows.push({
+            accountId: input.accountId,
+            date: t.date,
+            description: `eBay fee — ${t.description}`,
+            amount: -t.feeAmount,
+            type: "fee" as const,
+            category: "platform_fees" as const,
+            source: "ebay" as const,
+            taxDeductible: true,
+            taxCategory: "Schedule C Line 10",
+            externalId: `${t.externalId}-fee`,
+            isReconciled: false,
+          });
+        }
+        return rows;
+      });
+      const r = txns.length > 0 ? await insertTransactions(txns) : { inserted: 0, skipped: 0, flagged: 0 };
+      await updateFinancialAccount(input.accountId, { lastSyncedAt: new Date(), isConnected: true });
+      return { success: true, imported: r.inserted, skipped: r.skipped, flagged: r.flagged };
+    }),
+
   // ── Transactions ──
   getTransactions: protectedProcedure
     .input(z.object({
@@ -2967,7 +3047,7 @@ Return as JSON array.`;
     return getProspectScrapJobs(ctx.user.id);
   }),
 
-  // Send campaign (simulated — integrates with email provider)
+  // Send campaign via Resend (RESEND_API_KEY must be configured)
   sendCampaign: protectedProcedure
     .input(z.object({
       campaignId: z.number(),
@@ -2986,28 +3066,58 @@ Return as JSON array.`;
         return { sent: 0, message: `Test mode: would send to ${prospects.length} prospects`, prospects: prospects.length };
       }
 
-      // Record send events for each prospect
+      if (!isEmailConfigured()) {
+        throw new TRPCError({
+          code: "PRECONDITION_FAILED",
+          message: "Email delivery is not configured. Set RESEND_API_KEY (and verify a sending domain with Resend) to send real campaigns.",
+        });
+      }
+
+      let delivered = 0;
+      let failed = 0;
       for (const prospect of prospects) {
+        const result = await sendEmail({
+          to: prospect.email,
+          subject: campaign.subject,
+          html: campaign.bodyHtml ?? undefined,
+          text: campaign.bodyText ?? undefined,
+          fromName: campaign.fromName ?? undefined,
+          fromEmail: campaign.fromEmail ?? undefined,
+          replyTo: campaign.replyTo ?? undefined,
+        });
+
         await insertEmailEvent({
           campaignId: input.campaignId,
           prospectId: prospect.id,
           userId: ctx.user.id,
-          event: "sent",
+          event: result.success ? "sent" : "bounced",
           clickUrl: null,
           userAgent: null,
           ipAddress: null,
         });
-        await updateEmailProspect(prospect.id, { lastContactedAt: new Date() });
+
+        if (result.success) {
+          delivered++;
+          await updateEmailProspect(prospect.id, { lastContactedAt: new Date() });
+        } else {
+          failed++;
+          console.warn(`[EmailCampaign] Failed to send to ${prospect.email}: ${result.error}`);
+        }
+        await sleep(150); // stay under Resend's default rate limit
       }
 
       await updateEmailCampaign(input.campaignId, {
         status: "sent",
         sentAt: new Date(),
-        totalSent: (campaign.totalSent || 0) + prospects.length,
+        totalSent: (campaign.totalSent || 0) + delivered,
         totalRecipients: prospects.length,
       });
 
-      return { sent: prospects.length, message: `Campaign sent to ${prospects.length} prospects` };
+      return {
+        sent: delivered,
+        failed,
+        message: `Campaign delivered to ${delivered} of ${prospects.length} prospects${failed ? ` (${failed} failed — check RESEND_API_KEY / verified sending domain)` : ""}`,
+      };
     }),
 
   // Track open/click events (called from email tracking pixels/links)
