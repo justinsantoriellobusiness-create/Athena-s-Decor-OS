@@ -170,7 +170,7 @@ export type SourcedProduct = typeof sourcedProducts.$inferSelect;
 // ─── Sourcing App Credentials ─────────────────────────────────────────────────
 export const sourcingAppCredentials = mysqlTable("sourcing_app_credentials", {
   id: int("id").autoincrement().primaryKey(),
-  app: mysqlEnum("app", ["autods", "cj"]).notNull().unique(),
+  app: mysqlEnum("app", ["autods", "cj", "dsers"]).notNull().unique(),
   apiKey: varchar("apiKey", { length: 512 }),
   apiSecret: varchar("apiSecret", { length: 512 }),
   storeId: varchar("storeId", { length: 255 }),
@@ -469,7 +469,7 @@ export type AuditFixLog = typeof auditFixLog.$inferSelect;
 export const integrationTokens = mysqlTable("integration_tokens", {
   id: int("id").autoincrement().primaryKey(),
   userId: int("userId").notNull(),
-  platform: mysqlEnum("platform", ["shopify", "ebay", "paypal", "google", "facebook", "tiktok", "autods", "cj_dropshipping"]).notNull(),
+  platform: mysqlEnum("platform", ["shopify", "ebay", "paypal", "google", "facebook", "tiktok", "autods", "cj_dropshipping", "dsers"]).notNull(),
   accessToken: text("accessToken"),
   refreshToken: text("refreshToken"),
   tokenExpiry: timestamp("tokenExpiry"),
