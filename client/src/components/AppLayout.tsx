@@ -15,6 +15,7 @@ const navSections = [
     items: [
       { href: "/", label: "Dashboard", icon: LayoutDashboard },
       { href: "/analytics", label: "Analytics", icon: TrendingUp },
+      { href: "/automation", label: "Automation Hub", icon: Zap },
       { href: "/assistant", label: "AI Assistant", icon: Bot },
     ],
   },

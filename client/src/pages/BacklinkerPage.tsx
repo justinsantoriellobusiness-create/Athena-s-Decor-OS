@@ -56,6 +56,11 @@ export default function BacklinkerPage() {
   });
 
   // Post generation form
+  const [discoveryNiche, setDiscoveryNiche] = useState("home decor");
+  const [discoveryKeywords, setDiscoveryKeywords] = useState("");
+  const [discoveryCount, setDiscoveryCount] = useState(30);
+  const [bestSites, setBestSites] = useState<any[]>([]);
+
   const [postForm, setPostForm] = useState({
     topic: "",
     targetKeywords: "",
@@ -114,6 +119,12 @@ export default function BacklinkerPage() {
     onError: (err) => toast.error(err.message),
   });
 
+  const discoverBestSites = trpc.backlinker.discoverBestSites.useMutation({
+    onSuccess: (data: any) => {
+      setBestSites(data.sites || []);
+    },
+  });
+
   const updateCampaign = trpc.backlinker.updateCampaign.useMutation({
     onSuccess: () => {
       toast.success("Campaign updated.");
@@ -150,8 +161,8 @@ export default function BacklinkerPage() {
       <Tabs value={activeTab} onValueChange={setActiveTab}>
         <TabsList className="grid w-full grid-cols-3">
           <TabsTrigger value="campaigns">Campaigns</TabsTrigger>
-          <TabsTrigger value="opportunities" disabled={!selectedCampaignId}>
-            Opportunities {selectedCampaignId && opportunities.length > 0 ? `(${opportunities.length})` : ""}
+          <TabsTrigger value="opportunities">
+            Opportunities {opportunities.length > 0 ? `(${opportunities.length})` : ""}
           </TabsTrigger>
           <TabsTrigger value="content">Content Generator</TabsTrigger>
         </TabsList>
@@ -225,7 +236,93 @@ export default function BacklinkerPage() {
 
         {/* ── Opportunities Tab ── */}
         <TabsContent value="opportunities" className="space-y-4">
-          {selectedCampaignId && campaignDetail && (
+          {!selectedCampaignId ? (
+            <>
+              {/* Standalone AI Best-Site Discovery */}
+              <Card>
+                <CardContent className="pt-6">
+                  <div className="flex items-center justify-between mb-4">
+                    <div>
+                      <h3 className="font-semibold text-lg">AI Best-Site Discovery</h3>
+                      <p className="text-sm text-muted-foreground">Find the best sites to post backlinks — no campaign required</p>
+                    </div>
+                    <Button
+                      onClick={() => discoverBestSites.mutate({
+                        niche: discoveryNiche,
+                        keywords: discoveryKeywords,
+                        count: discoveryCount,
+                      })}
+                      disabled={discoverBestSites.isPending}
+                    >
+                      {discoverBestSites.isPending ? (
+                        <><RefreshCw className="h-4 w-4 mr-2 animate-spin" />Discovering...</>
+                      ) : (
+                        <><Search className="h-4 w-4 mr-2" />Discover Best Sites</>
+                      )}
+                    </Button>
+                  </div>
+                  <div className="grid grid-cols-3 gap-3">
+                    <div>
+                      <label className="text-xs font-medium text-muted-foreground">Niche</label>
+                      <Input value={discoveryNiche} onChange={e => setDiscoveryNiche(e.target.value)} placeholder="home decor" />
+                    </div>
+                    <div>
+                      <label className="text-xs font-medium text-muted-foreground">Keywords</label>
+                      <Input value={discoveryKeywords} onChange={e => setDiscoveryKeywords(e.target.value)} placeholder="interior design, furniture" />
+                    </div>
+                    <div>
+                      <label className="text-xs font-medium text-muted-foreground">Count</label>
+                      <Select value={String(discoveryCount)} onValueChange={v => setDiscoveryCount(Number(v))}>
+                        <SelectTrigger><SelectValue /></SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="10">10 sites</SelectItem>
+                          <SelectItem value="25">25 sites</SelectItem>
+                          <SelectItem value="50">50 sites</SelectItem>
+                          <SelectItem value="100">100 sites</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </div>
+                  </div>
+                </CardContent>
+              </Card>
+              {/* Results */}
+              {bestSites.length > 0 && (
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between">
+                    <h4 className="font-medium text-sm">{bestSites.length} sites discovered</h4>
+                  </div>
+                  {bestSites.map((site: any, i: number) => (
+                    <Card key={i} className="overflow-hidden">
+                      <div className="flex items-center justify-between p-4">
+                        <div className="flex items-center gap-3 flex-1 min-w-0">
+                          <Globe className="h-4 w-4 text-muted-foreground shrink-0" />
+                          <div className="min-w-0">
+                            <div className="font-medium text-sm truncate">{site.siteName}</div>
+                            <div className="text-xs text-muted-foreground truncate">{site.pageTitle}</div>
+                          </div>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <Badge variant="outline" className="text-xs">{site.type}</Badge>
+                          <Badge className={`text-xs ${site.seoValue === 'high' ? 'bg-green-600' : site.seoValue === 'medium' ? 'bg-yellow-600' : 'bg-gray-500'}`}>
+                            DA {site.domainAuthority}
+                          </Badge>
+                          <a href={site.pageUrl} target="_blank" rel="noopener noreferrer">
+                            <Button variant="ghost" size="sm"><ExternalLink className="h-3.5 w-3.5" /></Button>
+                          </a>
+                        </div>
+                      </div>
+                      {site.whyBest && (
+                        <div className="px-4 pb-3 text-xs text-muted-foreground border-t pt-2">
+                          <strong>Why:</strong> {site.whyBest}
+                          {site.outreachMessage && <><br /><strong>Pitch:</strong> {site.outreachMessage}</>}
+                        </div>
+                      )}
+                    </Card>
+                  ))}
+                </div>
+              )}
+            </>
+          ) : campaignDetail && (
             <>
               {/* Campaign header */}
               <div className="flex items-center justify-between">
@@ -411,15 +508,7 @@ export default function BacklinkerPage() {
               )}
             </>
           )}
-          {!selectedCampaignId && (
-            <Card className="border-dashed">
-              <CardContent className="flex flex-col items-center justify-center py-12 text-center">
-                <Target className="h-10 w-10 text-muted-foreground mb-3" />
-                <p className="font-medium">Select a campaign to view opportunities</p>
-                <p className="text-sm text-muted-foreground mt-1">Go to the Campaigns tab and click a campaign.</p>
-              </CardContent>
-            </Card>
-          )}
+
         </TabsContent>
 
         {/* ── Content Generator Tab ── */}

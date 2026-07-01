@@ -518,6 +518,18 @@ export default function SourcingPage() {
             ]}
             onRefetch={() => appCredsQuery.refetch()}
           />
+          <AppConnectionCard
+            app="dsers"
+            title="DSers"
+            description="Connect your DSers account to source products from AliExpress suppliers with automated order fulfillment"
+            icon="🔗"
+            isConnected={!!appCreds.find((c) => c.app === 'dsers')?.isConnected}
+            fields={[
+              { key: "apiKey", label: "DSers API Key", placeholder: "Your DSers API key from Settings > API", type: "password" },
+              { key: "storeId", label: "Store ID", placeholder: "Your DSers Store ID", type: "text" },
+            ]}
+            onRefetch={() => appCredsQuery.refetch()}
+          />
         </TabsContent>
       </Tabs>
 
@@ -626,7 +638,7 @@ export default function SourcingPage() {
 function AppConnectionCard({
   app, title, description, icon, isConnected, fields, onRefetch,
 }: {
-  app: "autods" | "cj";
+  app: "autods" | "cj" | "dsers";
   title: string;
   description: string;
   icon: string;

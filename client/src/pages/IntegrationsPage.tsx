@@ -9,11 +9,11 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { Separator } from "@/components/ui/separator";
 import { toast } from "sonner";
 import {
-  CheckCircle2, XCircle, ExternalLink, RefreshCw, Unplug, Plug,
-  ShoppingBag, Package, CreditCard, BarChart3, Megaphone, Video, Truck, Store
+  CheckCircle2, XCircle, ExternalLink, RefreshCw, Unplug, LogIn,
+  ShoppingBag, Package, CreditCard, BarChart3, Megaphone, Video, Truck, Store, Globe
 } from "lucide-react";
 
-type Platform = "shopify" | "ebay" | "paypal" | "google" | "facebook" | "tiktok" | "autods" | "cj_dropshipping";
+type Platform = "shopify" | "ebay" | "paypal" | "google" | "facebook" | "tiktok" | "autods" | "cj_dropshipping" | "dsers";
 
 interface PlatformConfig {
   id: Platform;
@@ -22,7 +22,8 @@ interface PlatformConfig {
   icon: React.ElementType;
   color: string;
   category: "ecommerce" | "payments" | "analytics" | "ads" | "fulfillment";
-  oauthSupported: boolean;
+  fields: { key: string; label: string; placeholder: string; type?: string; required?: boolean }[];
+  instructions: string;
   helpUrl: string;
 }
 
@@ -34,8 +35,12 @@ const PLATFORMS: PlatformConfig[] = [
     icon: ShoppingBag,
     color: "text-green-500",
     category: "ecommerce",
-    oauthSupported: true,
-    helpUrl: "https://help.shopify.com/en/manual/apps",
+    fields: [
+      { key: "shopDomain", label: "Store Domain", placeholder: "yourstore.myshopify.com", required: true },
+      { key: "apiKey", label: "Admin API Access Token", placeholder: "shpat_xxxxxxxxxxxxx", type: "password", required: true },
+    ],
+    instructions: "Go to Shopify Admin → Settings → Apps and sales channels → Develop apps → Create an app → Configure Admin API scopes (select all) → Install app → Copy the Admin API access token.",
+    helpUrl: "https://help.shopify.com/en/manual/apps/app-types/custom-apps",
   },
   {
     id: "ebay",
@@ -44,7 +49,10 @@ const PLATFORMS: PlatformConfig[] = [
     icon: Package,
     color: "text-yellow-500",
     category: "ecommerce",
-    oauthSupported: true,
+    fields: [
+      { key: "apiKey", label: "User Access Token", placeholder: "v^1.1#i^1#p^3#...", type: "password", required: true },
+    ],
+    instructions: "Go to eBay Developer Portal → Application Keys → Get a User Token → Sign in to eBay → Copy the User Access Token.",
     helpUrl: "https://developer.ebay.com/api-docs/static/oauth-tokens.html",
   },
   {
@@ -54,7 +62,11 @@ const PLATFORMS: PlatformConfig[] = [
     icon: CreditCard,
     color: "text-blue-500",
     category: "payments",
-    oauthSupported: true,
+    fields: [
+      { key: "apiKey", label: "Client ID", placeholder: "AX...", required: true },
+      { key: "apiSecret", label: "Client Secret", placeholder: "EL...", type: "password", required: true },
+    ],
+    instructions: "Go to PayPal Developer Dashboard → My Apps & Credentials → Create App (or select existing) → Copy Client ID and Secret from the Live tab.",
     helpUrl: "https://developer.paypal.com/api/rest/",
   },
   {
@@ -64,8 +76,12 @@ const PLATFORMS: PlatformConfig[] = [
     icon: BarChart3,
     color: "text-red-500",
     category: "analytics",
-    oauthSupported: true,
-    helpUrl: "https://developers.google.com/analytics",
+    fields: [
+      { key: "apiKey", label: "OAuth Access Token", placeholder: "ya29.a0...", type: "password", required: true },
+      { key: "accountId", label: "Property ID (optional)", placeholder: "GA4: 123456789" },
+    ],
+    instructions: "Go to Google Cloud Console → APIs & Services → Credentials → Create OAuth 2.0 Client → Use OAuth Playground to get an access token with Analytics and Search Console scopes.",
+    helpUrl: "https://developers.google.com/analytics/devguides/reporting/data/v1/quickstart-client-libraries",
   },
   {
     id: "facebook",
@@ -74,8 +90,12 @@ const PLATFORMS: PlatformConfig[] = [
     icon: Megaphone,
     color: "text-blue-600",
     category: "ads",
-    oauthSupported: true,
-    helpUrl: "https://developers.facebook.com/docs/marketing-apis/",
+    fields: [
+      { key: "apiKey", label: "System User Access Token", placeholder: "EAABs...", type: "password", required: true },
+      { key: "accountId", label: "Ad Account ID", placeholder: "act_123456789", required: true },
+    ],
+    instructions: "Go to Meta Business Suite → Settings → Business Settings → System Users → Generate Token with ads_read and ads_management permissions. Copy your Ad Account ID from Ads Manager.",
+    helpUrl: "https://developers.facebook.com/docs/marketing-apis/overview/authentication",
   },
   {
     id: "tiktok",
@@ -84,28 +104,53 @@ const PLATFORMS: PlatformConfig[] = [
     icon: Video,
     color: "text-pink-500",
     category: "ads",
-    oauthSupported: true,
-    helpUrl: "https://ads.tiktok.com/marketing_api/docs",
+    fields: [
+      { key: "apiKey", label: "Access Token", placeholder: "your-tiktok-access-token", type: "password", required: true },
+      { key: "accountId", label: "Advertiser ID", placeholder: "123456789", required: true },
+    ],
+    instructions: "Go to TikTok for Business → Marketing API → My Apps → Create App → Get Authorized → Copy the long-lived Access Token and your Advertiser ID.",
+    helpUrl: "https://ads.tiktok.com/marketing_api/docs?id=1738855176671234",
   },
   {
     id: "autods",
     name: "AutoDS",
-    description: "Push sourced products directly to your AutoDS import list.",
+    description: "Push sourced products directly to your AutoDS import list for automated fulfillment.",
     icon: Truck,
     color: "text-purple-500",
     category: "fulfillment",
-    oauthSupported: false,
+    fields: [
+      { key: "apiKey", label: "API Key", placeholder: "your-autods-api-key", type: "password", required: true },
+      { key: "storeId", label: "Store ID", placeholder: "12345", required: true },
+    ],
+    instructions: "Go to AutoDS Dashboard → Settings → API → Generate API Key. Your Store ID is visible in the URL when you're in your store dashboard.",
     helpUrl: "https://help.autods.com/en/articles/api",
   },
   {
     id: "cj_dropshipping",
     name: "CJ Dropshipping",
-    description: "Add products to your CJ favorites and manage fulfillment.",
+    description: "Add products to your CJ favorites and manage fulfillment directly.",
     icon: Store,
     color: "text-orange-500",
     category: "fulfillment",
-    oauthSupported: false,
+    fields: [
+      { key: "apiKey", label: "CJ Access Token", placeholder: "your-cj-access-token", type: "password", required: true },
+    ],
+    instructions: "Go to CJ Developer Portal (developers.cjdropshipping.com) → Register/Login → My Apps → Create App → Copy the Access Token.",
     helpUrl: "https://developers.cjdropshipping.com/",
+  },
+  {
+    id: "dsers",
+    name: "DSers",
+    description: "Source products from AliExpress via DSers and manage supplier orders.",
+    icon: Globe,
+    color: "text-cyan-500",
+    category: "fulfillment",
+    fields: [
+      { key: "apiKey", label: "DSers API Key", placeholder: "your-dsers-api-key", type: "password", required: true },
+      { key: "storeId", label: "Store ID (optional)", placeholder: "your-dsers-store-id" },
+    ],
+    instructions: "Go to DSers Dashboard → Settings → API Access → Generate API Key. Your Store ID is shown in your account settings.",
+    helpUrl: "https://www.dsers.com/",
   },
 ];
 
@@ -114,43 +159,28 @@ const CATEGORIES = [
   { id: "payments", label: "Payments" },
   { id: "analytics", label: "Analytics" },
   { id: "ads", label: "Advertising" },
-  { id: "fulfillment", label: "Fulfillment" },
+  { id: "fulfillment", label: "Fulfillment & Sourcing" },
 ];
 
 export default function IntegrationsPage() {
   const [selectedPlatform, setSelectedPlatform] = useState<PlatformConfig | null>(null);
-  const [shopDomain, setShopDomain] = useState("");
-  const [apiKey, setApiKey] = useState("");
-  const [storeId, setStoreId] = useState("");
   const [dialogOpen, setDialogOpen] = useState(false);
-  const [connectInstructions, setConnectInstructions] = useState<string | null>(null);
-  const [requiresApiKey, setRequiresApiKey] = useState(false);
+  const [formValues, setFormValues] = useState<Record<string, string>>({});
+  const [isConnecting, setIsConnecting] = useState(false);
 
   const { data: tokens, refetch: refetchTokens } = trpc.integrations.getAll.useQuery();
 
-  const initOAuth = trpc.integrations.initiateOAuth.useMutation({
+  const connectMutation = trpc.integrations.connect.useMutation({
     onSuccess: (data) => {
-      if (data.url) {
-        window.open(data.url, "_blank", "width=600,height=700,scrollbars=yes");
-        toast.info("OAuth window opened — complete authorization in the popup.");
-        setDialogOpen(false);
-      } else {
-        setConnectInstructions(data.instructions ?? null);
-        setRequiresApiKey(data.requiresApiKey ?? false);
-      }
-    },
-    onError: (err) => toast.error(err.message),
-  });
-
-  const saveApiKey = trpc.integrations.saveApiKey.useMutation({
-    onSuccess: () => {
-      toast.success("API key saved successfully!");
+      toast.success(data.message);
       setDialogOpen(false);
-      setApiKey("");
-      setStoreId("");
+      setFormValues({});
       refetchTokens();
     },
-    onError: (err) => toast.error(err.message),
+    onError: (err) => {
+      toast.error(err.message);
+      setIsConnecting(false);
+    },
   });
 
   const disconnect = trpc.integrations.disconnect.useMutation({
@@ -176,29 +206,33 @@ export default function IntegrationsPage() {
 
   const handleConnect = (platform: PlatformConfig) => {
     setSelectedPlatform(platform);
-    setConnectInstructions(null);
-    setRequiresApiKey(false);
-    setApiKey("");
-    setStoreId("");
-    setShopDomain("");
+    setFormValues({});
+    setIsConnecting(false);
     setDialogOpen(true);
   };
 
-  const handleInitiateOAuth = () => {
+  const handleSubmit = () => {
     if (!selectedPlatform) return;
-    initOAuth.mutate({
-      platform: selectedPlatform.id,
-      shopDomain: selectedPlatform.id === "shopify" ? shopDomain : undefined,
-      origin: window.location.origin,
-    });
-  };
+    setIsConnecting(true);
 
-  const handleSaveApiKey = () => {
-    if (!selectedPlatform || !apiKey.trim()) return;
-    saveApiKey.mutate({
-      platform: selectedPlatform.id as "autods" | "cj_dropshipping",
-      apiKey: apiKey.trim(),
-      storeId: storeId.trim() || undefined,
+    // Validate required fields
+    for (const field of selectedPlatform.fields) {
+      if (field.required && !formValues[field.key]?.trim()) {
+        toast.error(`${field.label} is required`);
+        setIsConnecting(false);
+        return;
+      }
+    }
+
+    connectMutation.mutate({
+      platform: selectedPlatform.id,
+      credentials: {
+        apiKey: formValues.apiKey || "",
+        apiSecret: formValues.apiSecret || undefined,
+        shopDomain: formValues.shopDomain || undefined,
+        storeId: formValues.storeId || undefined,
+        accountId: formValues.accountId || undefined,
+      },
     });
   };
 
@@ -212,7 +246,7 @@ export default function IntegrationsPage() {
         <div>
           <h1 className="text-2xl font-bold tracking-tight">Integrations</h1>
           <p className="text-muted-foreground text-sm mt-1">
-            Connect your platforms to replace mock data with real live data across all modules.
+            Connect your platforms to enable real data across all modules. All connections use secure API key authentication.
           </p>
         </div>
         <Badge variant="outline" className="text-sm px-3 py-1">
@@ -227,19 +261,25 @@ export default function IntegrationsPage() {
         </div>
       )}
 
+      {connectedCount > 0 && connectedCount < totalCount && (
+        <div className="rounded-lg border border-green-500/30 bg-green-500/10 px-4 py-3 text-sm text-green-600 dark:text-green-400">
+          <strong>{connectedCount} platform{connectedCount > 1 ? "s" : ""} connected.</strong> All connected modules are pulling real data. Connect more platforms to unlock additional features.
+        </div>
+      )}
+
       {/* Platform cards by category */}
       {CATEGORIES.map(category => {
         const categoryPlatforms = PLATFORMS.filter(p => p.category === category.id);
         return (
           <div key={category.id}>
             <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-wider mb-3">{category.label}</h2>
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
               {categoryPlatforms.map(platform => {
                 const isConnected = connectedPlatforms.has(platform.id);
                 const token = (tokens || []).find(t => t.platform === platform.id);
                 const Icon = platform.icon;
                 return (
-                  <Card key={platform.id} className={`transition-all ${isConnected ? "border-green-500/40 bg-green-500/5" : ""}`}>
+                  <Card key={platform.id} className={`transition-all ${isConnected ? "border-green-500/40 bg-green-500/5" : "hover:border-muted-foreground/30"}`}>
                     <CardHeader className="pb-3">
                       <div className="flex items-start justify-between">
                         <div className="flex items-center gap-3">
@@ -266,14 +306,6 @@ export default function IntegrationsPage() {
                             )}
                           </div>
                         </div>
-                        <a
-                          href={platform.helpUrl}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="text-muted-foreground hover:text-foreground transition-colors"
-                        >
-                          <ExternalLink className="h-4 w-4" />
-                        </a>
                       </div>
                     </CardHeader>
                     <CardContent className="pt-0">
@@ -308,8 +340,8 @@ export default function IntegrationsPage() {
                             className="flex-1"
                             onClick={() => handleConnect(platform)}
                           >
-                            <Plug className="h-3.5 w-3.5 mr-1.5" />
-                            {platform.oauthSupported ? "Connect with OAuth" : "Connect with API Key"}
+                            <LogIn className="h-3.5 w-3.5 mr-1.5" />
+                            Log In
                           </Button>
                         )}
                       </div>
@@ -324,91 +356,72 @@ export default function IntegrationsPage() {
 
       {/* Connect Dialog */}
       <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
-        <DialogContent className="sm:max-w-md">
+        <DialogContent className="sm:max-w-lg">
           <DialogHeader>
-            <DialogTitle>Connect {selectedPlatform?.name}</DialogTitle>
+            <DialogTitle className="flex items-center gap-2">
+              {selectedPlatform && <selectedPlatform.icon className={`h-5 w-5 ${selectedPlatform.color}`} />}
+              Connect {selectedPlatform?.name}
+            </DialogTitle>
             <DialogDescription>
-              {connectInstructions || (selectedPlatform?.oauthSupported
-                ? `Authorize Athena's OS to access your ${selectedPlatform?.name} account securely via OAuth.`
-                : `Enter your ${selectedPlatform?.name} API credentials.`)}
+              Enter your credentials below. The connection will be tested automatically before saving.
             </DialogDescription>
           </DialogHeader>
 
           <div className="space-y-4 py-2">
-            {/* Shopify needs shop domain first */}
-            {selectedPlatform?.id === "shopify" && !connectInstructions && (
-              <div className="space-y-2">
-                <Label htmlFor="shopDomain">Your Shopify Store Domain</Label>
-                <Input
-                  id="shopDomain"
-                  placeholder="yourstore.myshopify.com"
-                  value={shopDomain}
-                  onChange={e => setShopDomain(e.target.value)}
-                />
-                <p className="text-xs text-muted-foreground">Enter your .myshopify.com domain (without https://)</p>
-              </div>
-            )}
+            {/* Instructions */}
+            <div className="rounded-lg bg-muted/50 p-3 text-xs text-muted-foreground">
+              <strong className="text-foreground">How to get your credentials:</strong>
+              <p className="mt-1">{selectedPlatform?.instructions}</p>
+              <a
+                href={selectedPlatform?.helpUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex items-center gap-1 mt-2 text-primary hover:underline"
+              >
+                <ExternalLink className="h-3 w-3" />
+                View documentation
+              </a>
+            </div>
 
-            {/* API key input for AutoDS / CJ */}
-            {(requiresApiKey || (!selectedPlatform?.oauthSupported)) && (
-              <>
-                <div className="space-y-2">
-                  <Label htmlFor="apiKey">
-                    {selectedPlatform?.id === "autods" ? "AutoDS API Key" : "CJ Access Token"}
-                  </Label>
-                  <Input
-                    id="apiKey"
-                    type="password"
-                    placeholder="Paste your API key here"
-                    value={apiKey}
-                    onChange={e => setApiKey(e.target.value)}
-                  />
-                </div>
-                {selectedPlatform?.id === "autods" && (
-                  <div className="space-y-2">
-                    <Label htmlFor="storeId">AutoDS Store ID</Label>
-                    <Input
-                      id="storeId"
-                      placeholder="Your AutoDS store ID"
-                      value={storeId}
-                      onChange={e => setStoreId(e.target.value)}
-                    />
-                    <p className="text-xs text-muted-foreground">
-                      Find it in AutoDS → Settings → My Stores
-                    </p>
-                  </div>
-                )}
-                <Separator />
-                <p className="text-xs text-muted-foreground">
-                  <strong>How to get your key:</strong>{" "}
-                  <a href={selectedPlatform?.helpUrl} target="_blank" rel="noopener noreferrer" className="underline">
-                    {selectedPlatform?.name} API documentation →
-                  </a>
-                </p>
-              </>
-            )}
+            <Separator />
+
+            {/* Dynamic form fields */}
+            {selectedPlatform?.fields.map(field => (
+              <div key={field.key} className="space-y-2">
+                <Label htmlFor={field.key}>
+                  {field.label}
+                  {field.required && <span className="text-destructive ml-1">*</span>}
+                </Label>
+                <Input
+                  id={field.key}
+                  type={field.type || "text"}
+                  placeholder={field.placeholder}
+                  value={formValues[field.key] || ""}
+                  onChange={e => setFormValues(prev => ({ ...prev, [field.key]: e.target.value }))}
+                  autoComplete="off"
+                />
+              </div>
+            ))}
           </div>
 
           <DialogFooter className="gap-2">
             <Button variant="outline" onClick={() => setDialogOpen(false)}>Cancel</Button>
-            {requiresApiKey || !selectedPlatform?.oauthSupported ? (
-              <Button
-                onClick={handleSaveApiKey}
-                disabled={!apiKey.trim() || saveApiKey.isPending}
-              >
-                {saveApiKey.isPending ? "Saving..." : "Save & Connect"}
-              </Button>
-            ) : (
-              <Button
-                onClick={handleInitiateOAuth}
-                disabled={
-                  initOAuth.isPending ||
-                  (selectedPlatform?.id === "shopify" && !shopDomain.trim())
-                }
-              >
-                {initOAuth.isPending ? "Redirecting..." : `Connect with ${selectedPlatform?.name}`}
-              </Button>
-            )}
+            <Button
+              onClick={handleSubmit}
+              disabled={isConnecting || connectMutation.isPending}
+            >
+              {isConnecting || connectMutation.isPending ? (
+                <>
+                  <RefreshCw className="h-3.5 w-3.5 mr-1.5 animate-spin" />
+                  Testing & Connecting...
+                </>
+              ) : (
+                <>
+                  <LogIn className="h-3.5 w-3.5 mr-1.5" />
+                  Connect
+                </>
+              )}
+            </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
