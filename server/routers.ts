@@ -4,7 +4,7 @@ import { systemRouter } from "./_core/systemRouter";
 import { publicProcedure, protectedProcedure, router } from "./_core/trpc";
 import { z } from "zod";
 import { TRPCError } from "@trpc/server";
-import { encryptCredentials, decryptCredentials, maskCredential } from "./crypto";
+import { encryptCredentials, decryptCredentials, maskCredential, encryptCredential } from "./crypto";
 import { invokeLLM } from "./_core/llm";
 import { generateImage } from "./_core/imageGeneration";
 import { sendEmail, isEmailConfigured } from "./_core/email";
@@ -140,7 +140,10 @@ const shopifyRouter = router({
   }),
 
   connect: protectedProcedure
-    .input(z.object({ storeDomain: z.string().min(1), accessToken: z.string().min(1) }))
+    .input(z.object({
+      storeDomain: z.string().min(1).regex(/^[a-z0-9-]+\.myshopify\.com$/i, "Must be a *.myshopify.com domain"),
+      accessToken: z.string().min(1),
+    }))
     .mutation(async ({ input }) => {
       try {
         const client = await getShopifyClient(input.storeDomain, input.accessToken);
@@ -2292,12 +2295,16 @@ const accountingRouter = router({
 const integrationsRouter = router({
   getAll: protectedProcedure.query(async ({ ctx }) => {
     const tokens = await getAllIntegrationTokens(ctx.user.id);
-    // Mask sensitive credentials before returning to client
-    return tokens.map(t => ({
-      ...t,
-      accessToken: t.accessToken ? "••••••••" + t.accessToken.slice(-4) : null,
-      refreshToken: t.refreshToken ? "••••••••" + t.refreshToken.slice(-4) : null,
-    }));
+    // Decrypt only to compute a last-4 display mask — never return the real value
+    return tokens.map(t => {
+      const accessToken = t.accessToken ? decryptCredential(t.accessToken) ?? t.accessToken : null;
+      const refreshToken = t.refreshToken ? decryptCredential(t.refreshToken) ?? t.refreshToken : null;
+      return {
+        ...t,
+        accessToken: accessToken ? "••••••••" + accessToken.slice(-4) : null,
+        refreshToken: refreshToken ? "••••••••" + refreshToken.slice(-4) : null,
+      };
+    });
   }),
 
   // Universal connect — all platforms use API key/token login (no broken OAuth)
@@ -2323,6 +2330,9 @@ const integrationsRouter = router({
         switch (platform) {
           case "shopify": {
             if (!credentials.shopDomain) throw new Error("Shop domain is required");
+            if (!/^[a-z0-9-]+\.myshopify\.com$/i.test(credentials.shopDomain)) {
+              throw new Error("Shop domain must be a *.myshopify.com address");
+            }
             // Test Shopify connection with the provided access token
             const testUrl = `https://${credentials.shopDomain}/admin/api/2024-01/shop.json`;
             const res = await fetch(testUrl, {
@@ -2419,8 +2429,8 @@ const integrationsRouter = router({
       if (credentials.apiSecret) metadata.apiSecret = credentials.apiSecret;
 
       await upsertIntegrationToken(ctx.user.id, platform, {
-        accessToken: credentials.apiKey,
-        metadata: Object.keys(metadata).length > 0 ? JSON.stringify(metadata) : undefined,
+        accessToken: encryptCredential(credentials.apiKey),
+        metadata: Object.keys(metadata).length > 0 ? encryptCredential(JSON.stringify(metadata)) : undefined,
       });
 
       return { success: true, message: `${platform} connected successfully` };
@@ -2435,8 +2445,8 @@ const integrationsRouter = router({
     }))
     .mutation(async ({ ctx, input }) => {
       await upsertIntegrationToken(ctx.user.id, input.platform, {
-        accessToken: input.apiKey,
-        metadata: input.storeId ? JSON.stringify({ storeId: input.storeId }) : undefined,
+        accessToken: encryptCredential(input.apiKey),
+        metadata: input.storeId ? encryptCredential(JSON.stringify({ storeId: input.storeId })) : undefined,
       });
       return { success: true };
     }),
@@ -2483,19 +2493,31 @@ const integrationsRouter = router({
       const isExpired = token.tokenExpiry ? token.tokenExpiry < new Date() : false;
       if (isExpired) return { success: false, message: "Token expired — please reconnect with a fresh token" };
 
+      const accessToken = token.accessToken ? decryptCredential(token.accessToken) ?? "" : "";
+      const metadataJson = token.metadata ? decryptCredential(token.metadata) : null;
+
+      // Accept a Shopify domain that was validated pre-encryption (see the
+      // `connect` mutation) — this only ever runs against the shop's own
+      // domain since `metadata.shopDomain` was set by the same request that
+      // already succeeded a live Shopify Admin API test call.
+      const shopDomainPattern = /^[a-z0-9-]+\.myshopify\.com$/i;
+
       // Actually test the connection
       try {
         switch (input.platform) {
           case "shopify": {
-            const meta = token.metadata ? JSON.parse(token.metadata) : {};
-            const res = await fetch(`https://${meta.shopDomain || "store"}/admin/api/2024-01/shop.json`, {
-              headers: { "X-Shopify-Access-Token": token.accessToken || "" },
+            const meta = metadataJson ? JSON.parse(metadataJson) : {};
+            if (!meta.shopDomain || !shopDomainPattern.test(meta.shopDomain)) {
+              return { success: false, message: "Stored shop domain is invalid — reconnect Shopify" };
+            }
+            const res = await fetch(`https://${meta.shopDomain}/admin/api/2024-01/shop.json`, {
+              headers: { "X-Shopify-Access-Token": accessToken },
             });
             return { success: res.ok, message: res.ok ? "Shopify connection verified — store is accessible" : "Connection failed — check token" };
           }
           case "ebay": {
             const res = await fetch("https://api.ebay.com/sell/account/v1/privilege", {
-              headers: { Authorization: `Bearer ${token.accessToken}` },
+              headers: { Authorization: `Bearer ${accessToken}` },
             });
             return { success: res.ok, message: res.ok ? "eBay connection verified" : "eBay token expired — reconnect" };
           }
@@ -3130,6 +3152,20 @@ Return as JSON array.`;
       clickUrl: z.string().optional(),
     }))
     .mutation(async ({ input }) => {
+      // Public endpoint (hit by tracking pixels/links in outbound emails,
+      // so the caller is never an authenticated user) — verify the
+      // campaign/prospect actually belong to the claimed userId before
+      // writing anything, so an arbitrary caller can't forge events or
+      // force-unsubscribe someone else's prospects.
+      const campaign = await getEmailCampaign(input.campaignId);
+      if (!campaign || campaign.userId !== input.userId) {
+        return { success: false };
+      }
+      const prospects = await getEmailProspects(input.userId);
+      if (!prospects.some(p => p.id === input.prospectId)) {
+        return { success: false };
+      }
+
       await insertEmailEvent({ ...input, userAgent: null, ipAddress: null, clickUrl: input.clickUrl ?? null });
       if (input.event === "unsubscribed") {
         await updateEmailProspect(input.prospectId, { status: "unsubscribed" });

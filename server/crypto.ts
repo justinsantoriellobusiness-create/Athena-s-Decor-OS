@@ -6,9 +6,18 @@
 import { createCipheriv, createDecipheriv, createHash, randomBytes } from "crypto";
 import { ENV } from "./_core/env";
 
-// Derive a stable 32-byte key from the JWT_SECRET
+// Derive a stable 32-byte key from JWT_SECRET. Failing hard here is
+// intentional: silently falling back to a hardcoded, source-visible key
+// would make every "encrypted" credential in the database trivially
+// decryptable by anyone who's read the code, without any indication in
+// logs that encryption was ever weakened.
 function getDerivedKey(): Buffer {
-  return createHash("sha256").update(ENV.cookieSecret || "athenas-os-default-key").digest();
+  if (!ENV.cookieSecret) {
+    throw new Error(
+      "JWT_SECRET is not configured — credential encryption cannot run without it."
+    );
+  }
+  return createHash("sha256").update(ENV.cookieSecret).digest();
 }
 
 /**
