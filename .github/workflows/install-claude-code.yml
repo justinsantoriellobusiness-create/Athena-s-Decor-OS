@@ -18,7 +18,7 @@ jobs:
       - name: Install Claude Code
         uses: pleaseai/setup-claude-code@v1
         with:
-          github_token: ${{ secrets.GITHUB_TOKEN }})     # create this secret in repo Settings → Secrets → Actions
+          github_token: ${{ secrets.GITHUB_TOKEN }}
           
       - name: Verify installation
         run: |
