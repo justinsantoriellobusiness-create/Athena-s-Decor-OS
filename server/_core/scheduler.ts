@@ -80,6 +80,40 @@ async function tick(port: number) {
   }
 }
 
+// Autonomous Hub routes (frequencyHours-based, not cron expressions) self-
+// throttle inside each handler via isAutonomousConfigDue(), so this just
+// needs to ping each route periodically and let it no-op when nothing's due.
+const AUTONOMOUS_ROUTES = [
+  "email-scraper",
+  "email-campaigns",
+  "backlinker",
+  "blog-autonomous",
+  "site-audit",
+  "product-sourcing",
+];
+const AUTONOMOUS_CHECK_INTERVAL_MS = 5 * 60_000;
+
+function tickAutonomous(port: number) {
+  for (const route of AUTONOMOUS_ROUTES) {
+    fetch(`http://127.0.0.1:${port}/api/scheduled/${route}`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        [INTERNAL_CRON_SECRET_HEADER]: ENV.cookieSecret,
+      },
+      body: "{}",
+    })
+      .then(res => {
+        if (!res.ok) {
+          console.error(`[Scheduler] autonomous/${route} returned ${res.status}`);
+        }
+      })
+      .catch(error => {
+        console.error(`[Scheduler] Failed to trigger autonomous/${route}:`, error);
+      });
+  }
+}
+
 export function startInternalScheduler(port: number) {
   if (!ENV.cookieSecret) {
     console.warn(
@@ -90,5 +124,11 @@ export function startInternalScheduler(port: number) {
   setInterval(() => {
     tick(port).catch(error => console.error("[Scheduler] tick failed:", error));
   }, CHECK_INTERVAL_MS);
-  console.log("[Scheduler] Internal automation scheduler started (polls every 60s).");
+  setInterval(() => {
+    tickAutonomous(port);
+  }, AUTONOMOUS_CHECK_INTERVAL_MS);
+  // Fire once shortly after boot too, so enabling a module doesn't require
+  // waiting a full interval before its first check.
+  setTimeout(() => tickAutonomous(port), 15_000);
+  console.log("[Scheduler] Internal automation scheduler started (legacy: polls every 60s, autonomous hub: polls every 5m).");
 }

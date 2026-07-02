@@ -365,10 +365,12 @@ function TransactionsTab({ accounts }: { accounts: any[] }) {
 
   const deleteMutation = trpc.accounting.deleteTransaction.useMutation({
     onSuccess: () => { toast.success("Deleted"); refetch(); },
+    onError: (e) => toast.error(e.message),
   });
 
   const reconcileMutation = trpc.accounting.updateTransaction.useMutation({
     onSuccess: () => refetch(),
+    onError: (e) => toast.error(e.message),
   });
 
   const CATEGORIES = [
@@ -594,6 +596,7 @@ function TaxTab({ year }: { year: number }) {
   const { data: settings } = trpc.accounting.getTaxSettings.useQuery({ taxYear: year });
   const saveMutation = trpc.accounting.saveTaxSettings.useMutation({
     onSuccess: () => toast.success("Tax settings saved"),
+    onError: (e) => toast.error(e.message),
   });
   const [settingsForm, setSettingsForm] = useState({
     businessName: "", ein: "", filingStatus: "sole_proprietor" as const,
@@ -856,6 +859,7 @@ function AccountsTab() {
 
   const deleteMutation = trpc.accounting.deleteAccount.useMutation({
     onSuccess: () => { toast.success("Account removed"); refetch(); },
+    onError: (e) => toast.error(e.message),
   });
 
   const syncMutation = trpc.accounting.syncShopify.useMutation({

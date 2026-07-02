@@ -124,6 +124,23 @@ export class ShopifyClient {
     return this.request("GET", `/orders.json?status=${status}&limit=${limit}&financial_status=paid`);
   }
 
+  async getCustomers(limit = 250, pageInfo?: string): Promise<{ customers: Array<{
+    id: number;
+    email: string | null;
+    first_name: string | null;
+    last_name: string | null;
+    accepts_marketing: boolean;
+    orders_count: number;
+    tags: string;
+  }> }> {
+    const params = new URLSearchParams({
+      limit: String(limit),
+      fields: "id,email,first_name,last_name,accepts_marketing,orders_count,tags",
+    });
+    if (pageInfo) params.set("page_info", pageInfo);
+    return this.request("GET", `/customers.json?${params}`);
+  }
+
   async updateProductMetafields(productId: string, metafields: { key: string; value: string; type: string; namespace: string }[]): Promise<unknown> {
     // Shopify requires individual metafield updates
     const results = await Promise.allSettled(

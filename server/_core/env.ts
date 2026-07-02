@@ -30,4 +30,11 @@ export const ENV = {
   // Outbound transactional/marketing email delivery.
   resendApiKey: process.env.RESEND_API_KEY ?? "",
   emailFrom: process.env.EMAIL_FROM ?? "",
+  // Public URL this server is reachable at, for tracking pixels/links
+  // embedded in outbound emails. Railway sets RAILWAY_PUBLIC_DOMAIN
+  // automatically; PUBLIC_BASE_URL overrides it if set explicitly.
+  publicBaseUrl: (
+    process.env.PUBLIC_BASE_URL ||
+    (process.env.RAILWAY_PUBLIC_DOMAIN ? `https://${process.env.RAILWAY_PUBLIC_DOMAIN}` : "")
+  ).replace(/\/+$/, ""),
 };

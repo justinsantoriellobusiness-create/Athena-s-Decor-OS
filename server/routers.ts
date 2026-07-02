@@ -8,9 +8,14 @@ import { encryptCredentials, decryptCredentials, maskCredential, encryptCredenti
 import { invokeLLM } from "./_core/llm";
 import { generateImage } from "./_core/imageGeneration";
 import { sendEmail, isEmailConfigured } from "./_core/email";
+import { instrumentEmailHtml } from "./emailTracking";
+import { ENV } from "./_core/env";
 import { fetchPayPalTransactions } from "./_core/paypal";
 import { fetchEbayTransactions } from "./_core/ebay";
 import { publishFacebookCampaign, publishTikTokCampaign } from "./_core/adPlatforms";
+import { runFullAudit, applyAllAuditFixes } from "./auditRunner";
+import { runSourcingScrape } from "./sourcingRunner";
+import { optimizeActiveCampaignBudgets } from "./adsRunner";
 import { storagePut } from "./storage";
 import {
   getShopifyConfig,
@@ -837,89 +842,12 @@ const sourcingRouter = router({
   runScrape: protectedProcedure
     .input(z.object({ specId: z.number() }))
     .mutation(async ({ input }) => {
-      const spec = await (async () => {
-        const specs = await getSourcingSpecs();
-        return specs.find((s) => s.id === input.specId);
-      })();
-      if (!spec) throw new TRPCError({ code: "NOT_FOUND", message: "Spec not found" });
-      await updateSourcingSpec(input.specId, { status: "running" });
       try {
-        const sources = (spec.sources as string[]) || ["dsers"];
-        const sourceLabels: Record<string, string> = {
-          dsers: "DSers (AliExpress dropshipping products)",
-          cj: "CJ Dropshipping",
-          aliexpress: "AliExpress (direct listings, sourced via DSers integration)",
-        };
-        const sourceDescriptions = sources.map((s) => sourceLabels[s] || s).join(", ");
-        const response = await invokeLLM({
-          messages: [
-            {
-              role: "system",
-              content: `You are a dropshipping product research expert. Generate realistic product data for ${sourceDescriptions}. Focus on home decor and lifestyle products. Return only valid JSON.`,
-            },
-            {
-              role: "user",
-              content: `Research dropshipping products for: keywords=${JSON.stringify(spec.keywords)}, categories=${JSON.stringify(spec.categories || [])}, minPrice=${spec.minPrice || 5}, maxPrice=${spec.maxPrice || 100}, minRating=${spec.minRating || 4.0}, minOrders=${spec.minOrders || 100}, maxShippingDays=${spec.maxShippingDays || 15}, sources=${JSON.stringify(sources)}. Generate 12-18 realistic products spread across the requested sources. For aliexpress source, use "aliexpress" as the source field. Return JSON: { "products": [{ "source": "dsers"|"cj"|"aliexpress", "externalId": string, "title": string, "description": string, "price": number, "compareAtPrice": number, "imageUrl": string, "rating": number, "orders": number, "category": string, "supplier": string, "shippingTime": string, "shippingDays": number, "stockLevel": number, "aiScore": number, "aiScoreReason": string }] }`,
-            },
-          ],
-          response_format: {
-            type: "json_schema",
-            json_schema: {
-              name: "sourcing_results",
-              strict: true,
-              schema: {
-                type: "object",
-                properties: {
-                  products: {
-                    type: "array",
-                    items: {
-                      type: "object",
-                      properties: {
-                        source: { type: "string" },
-                        externalId: { type: "string" },
-                        title: { type: "string" },
-                        description: { type: "string" },
-                        price: { type: "number" },
-                        compareAtPrice: { type: "number" },
-                        imageUrl: { type: "string" },
-                        rating: { type: "number" },
-                        orders: { type: "number" },
-                        category: { type: "string" },
-                        supplier: { type: "string" },
-                        shippingTime: { type: "string" },
-                        shippingDays: { type: "number" },
-                        stockLevel: { type: "number" },
-                        aiScore: { type: "number" },
-                        aiScoreReason: { type: "string" },
-                      },
-                      required: ["source", "externalId", "title", "description", "price", "compareAtPrice", "imageUrl", "rating", "orders", "category", "supplier", "shippingTime", "shippingDays", "stockLevel", "aiScore", "aiScoreReason"],
-                      additionalProperties: false,
-                    },
-                  },
-                },
-                required: ["products"],
-                additionalProperties: false,
-              },
-            },
-          },
-        });
-        const scrapeRaw = response.choices[0]?.message?.content;
-        const parsed = JSON.parse(typeof scrapeRaw === "string" ? scrapeRaw : "{}");
-        let products = (parsed.products || []).map((p: any) => ({ ...p, specId: input.specId }));
-        // Filter by shipping and stock
-        if (spec.maxShippingDays) products = products.filter((p: any) => !p.shippingDays || p.shippingDays <= (spec.maxShippingDays as number));
-        if (spec.minStockLevel) products = products.filter((p: any) => !p.stockLevel || p.stockLevel >= (spec.minStockLevel as number));
-        // Mark top 3 best picks
-        const sorted = [...products].sort((a: any, b: any) => (b.aiScore || 0) - (a.aiScore || 0));
-        const bestPickIds = new Set(sorted.slice(0, 3).map((p: any) => p.externalId));
-        products = products.map((p: any) => ({ ...p, isBestPick: bestPickIds.has(p.externalId) }));
-        await insertSourcedProducts(products);
-        await updateSourcingSpec(input.specId, { status: "completed", lastRunAt: new Date(), resultCount: products.length });
-        return { success: true, count: products.length };
+        const result = await runSourcingScrape(input.specId);
+        return { success: true, count: result.count, verifiedCount: result.verifiedCount };
       } catch (err: any) {
-        await updateSourcingSpec(input.specId, { status: "error" });
         console.error("[Sourcing Error]:", err);
-        throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "Scrape failed. Please try again." });
+        throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: err.message === "Spec not found" ? err.message : "Scrape failed. Please try again." });
       }
     }),
   getResults: protectedProcedure
@@ -1548,116 +1476,16 @@ const auditRouter = router({
     }),
 
   runAudit: protectedProcedure.mutation(async () => {
-    const config = await getShopifyConfig();
-    const runId = await createAuditRun();
     try {
-      let products: any[] = [];
-      if (config?.isConnected) {
-        try {
-          const client = await getShopifyClient(config.storeDomain, decryptCredential(config.accessToken) ?? config.accessToken);
-          const productsResult = await client.getProducts(50, "1");
-          products = productsResult.products ?? [];
-        } catch (e) { console.warn("[Audit] Could not fetch Shopify products:", e); }
-      }
-      const pages: any[] = [
-        { type: "homepage", id: "homepage", title: "Homepage", url: `https://${config?.storeDomain ?? "athenasdecor.com"}/` },
-        { type: "collection", id: "all", title: "All Products Collection", url: `https://${config?.storeDomain ?? "athenasdecor.com"}/collections/all` },
-        ...products.slice(0, 20).map((p: any) => ({
-          type: "product", id: String(p.id), title: p.title,
-          url: `https://${config?.storeDomain ?? "athenasdecor.com"}/products/${p.handle}`,
-          metaTitle: p.metafields_global_title_tag ?? "", metaDescription: p.metafields_global_description_tag ?? "",
-          description: (p.body_html ?? "").replace(/<[^>]*>/g, ""), images: p.images ?? [],
-        })),
-      ];
-      const allIssues: any[] = [];
-      let totalSeoScore = 0; let totalCroScore = 0;
-      for (const page of pages) {
-        const prompt = page.type === "product"
-          ? `Audit this Shopify product page for SEO and CRO issues:
-Title: ${page.title}
-Meta Title: ${page.metaTitle || "MISSING"}
-Meta Description: ${page.metaDescription || "MISSING"}
-Description length: ${page.description?.length ?? 0} chars
-Image count: ${page.images?.length ?? 0}
-URL: ${page.url}
-
-Return JSON with seoScore (0-100), croScore (0-100), and issues array.
-For each issue: issueType (snake_case), severity (critical|warning|info), title, description, suggestion, currentValue, suggestedValue.
-AUTO_FIXABLE types: missing_alt_text, missing_meta_description, missing_meta_title, short_meta_description, long_meta_description, thin_content, poor_description, low_cro, weak_cta
-MANUAL types: slow_page_speed, broken_link, missing_schema, structural_issue`
-          : `Audit this ${page.type} page for SEO and CRO issues. URL: ${page.url}. Title: ${page.title}.
-Return JSON with seoScore (0-100), croScore (0-100), and issues array.
-For each issue: issueType (snake_case), severity (critical|warning|info), title, description, suggestion, currentValue, suggestedValue.`;
-        const response = await invokeLLM({
-          messages: [
-            { role: "system", content: "You are an expert SEO and CRO auditor for Shopify dropshipping stores. Return structured JSON only. Be specific and actionable." },
-            { role: "user", content: prompt },
-          ],
-          response_format: {
-            type: "json_schema",
-            json_schema: {
-              name: "page_audit",
-              strict: true,
-              schema: {
-                type: "object",
-                properties: {
-                  seoScore: { type: "number" }, croScore: { type: "number" },
-                  issues: {
-                    type: "array",
-                    items: {
-                      type: "object",
-                      properties: {
-                        issueType: { type: "string" }, severity: { type: "string" },
-                        title: { type: "string" }, description: { type: "string" },
-                        suggestion: { type: "string" }, currentValue: { type: "string" }, suggestedValue: { type: "string" },
-                      },
-                      required: ["issueType", "severity", "title", "description", "suggestion", "currentValue", "suggestedValue"],
-                      additionalProperties: false,
-                    },
-                  },
-                },
-                required: ["seoScore", "croScore", "issues"],
-                additionalProperties: false,
-              },
-            },
-          },
-        });
-        const raw = response.choices[0]?.message?.content;
-        const pageResult = JSON.parse(typeof raw === "string" ? raw : '{"seoScore":50,"croScore":50,"issues":[]}');
-        totalSeoScore += pageResult.seoScore ?? 50;
-        totalCroScore += pageResult.croScore ?? 50;
-        for (const issue of (pageResult.issues ?? [])) {
-          allIssues.push({
-            runId, pageType: page.type, pageId: page.id, pageTitle: page.title, pageUrl: page.url,
-            issueType: issue.issueType,
-            severity: issue.severity === "critical" ? "critical" : issue.severity === "warning" ? "warning" : "info",
-            title: issue.title, description: issue.description, suggestion: issue.suggestion,
-            currentValue: issue.currentValue, suggestedValue: issue.suggestedValue, status: "open",
-          });
-        }
-        await sleep(300);
-      }
-      const avgSeo = Math.round(totalSeoScore / pages.length);
-      const avgCro = Math.round(totalCroScore / pages.length);
-      const overallScore = Math.round((avgSeo + avgCro) / 2);
-      const criticalCount = allIssues.filter((i) => i.severity === "critical").length;
-      const warningCount = allIssues.filter((i) => i.severity === "warning").length;
-      const infoCount = allIssues.filter((i) => i.severity === "info").length;
-      if (allIssues.length > 0) await insertAuditIssues(allIssues);
-      await updateAuditRun(runId, {
-        status: "completed", overallScore, seoScore: avgSeo, croScore: avgCro, technicalScore: avgSeo,
-        pageCount: pages.length, issueCount: allIssues.length, criticalCount, warningCount, infoCount,
-        summary: `Audited ${pages.length} pages. Found ${allIssues.length} issues (${criticalCount} critical, ${warningCount} warnings). Overall score: ${overallScore}/100.`,
-        completedAt: new Date(),
-      });
+      const result = await runFullAudit();
       await updateAutomationSetting("seo", { lastRunAt: new Date(), lastRunStatus: "success" });
-      return { success: true, runId, issueCount: allIssues.length, overallScore };
+      return { success: true, ...result };
     } catch (err: any) {
-      await updateAuditRun(runId, { status: "error", errorMessage: err.message });
       console.error("[Audit] Run failed:", err);
       throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "Audit failed. Please try again." });
     }
   }),
+
 
   applyFix: protectedProcedure
     .input(z.object({ issueId: z.number(), runId: z.number() }))
@@ -1715,56 +1543,12 @@ For each issue: issueType (snake_case), severity (critical|warning|info), title,
   applyAllFixes: protectedProcedure
     .input(z.object({ runId: z.number() }))
     .mutation(async ({ input }) => {
-      const config = await getShopifyConfig();
-      if (!config?.isConnected) throw new TRPCError({ code: "BAD_REQUEST", message: "Shopify not connected" });
-      const AUTO_FIXABLE_TYPES = [
-        "missing_alt_text", "missing_meta_description", "missing_meta_title",
-        "short_meta_description", "long_meta_description", "short_meta_title", "long_meta_title",
-        "missing_title", "thin_content", "poor_description", "low_cro", "weak_cta", "missing_h1", "duplicate_title",
-      ];
-      const allIssues = await getOpenAuditIssues(input.runId);
-      const fixableIssues = allIssues.filter((i) => AUTO_FIXABLE_TYPES.includes(i.issueType));
-      const client = await getShopifyClient(config.storeDomain, decryptCredential(config.accessToken) ?? config.accessToken);
-      let fixed = 0; let failed = 0;
-      for (const issue of fixableIssues) {
-        try {
-          let fixValue = issue.suggestedValue ?? null;
-          if (!fixValue) {
-            const genResponse = await invokeLLM({
-              messages: [
-                { role: "system", content: "You are an expert Shopify SEO copywriter for Athena's Decor. Return JSON only." },
-                { role: "user", content: `Generate a fix for: ${issue.description ?? issue.issueType} on page "${issue.pageTitle}". Current: "${issue.currentValue ?? "empty"}". Issue type: ${issue.issueType}. Return JSON: { "fixValue": string }` },
-              ],
-              response_format: { type: "json_schema", json_schema: { name: "fix_gen", strict: true, schema: { type: "object", properties: { fixValue: { type: "string" } }, required: ["fixValue"], additionalProperties: false } } },
-            });
-            const raw = genResponse.choices[0]?.message?.content;
-            fixValue = JSON.parse(typeof raw === "string" ? raw : "{}").fixValue ?? "";
-          }
-          if (!fixValue) { failed++; continue; }
-          const updateData: any = {};
-          let fieldChanged: string = issue.issueType;
-          if (["missing_meta_title", "short_meta_title", "long_meta_title", "missing_meta", "short_meta", "long_meta"].includes(issue.issueType)) {
-            let v = fixValue; if (v.length > 60) v = v.substring(0, 57) + "..."; updateData.metafields_global_title_tag = v; fixValue = v; fieldChanged = "metaTitle";
-          } else if (["missing_meta_description", "short_meta_description", "long_meta_description"].includes(issue.issueType)) {
-            let v = fixValue; if (v.length > 160) v = v.substring(0, 157) + "..."; updateData.metafields_global_description_tag = v; fixValue = v; fieldChanged = "metaDescription";
-          } else if (["thin_content", "poor_description", "low_cro", "weak_cta"].includes(issue.issueType)) {
-            updateData.body_html = fixValue; fieldChanged = "description";
-          } else if (["missing_title", "duplicate_content"].includes(issue.issueType)) {
-            updateData.title = fixValue; fieldChanged = "title";
-          }
-          if (issue.pageType === "product" && issue.pageId && Object.keys(updateData).length > 0) {
-            await withRateLimit(() => client.updateProduct(issue.pageId!, updateData));
-          }
-          await insertAuditFixLog({ auditRunId: input.runId, issueId: issue.id, pageType: issue.pageType ?? undefined, pageId: issue.pageId ?? undefined, pageTitle: issue.pageTitle ?? undefined, fieldChanged, oldValue: issue.currentValue ?? "", newValue: fixValue, fixType: issue.issueType, status: "applied" });
-          await updateAuditIssue(issue.id, { status: "fixed", fixAppliedAt: new Date() });
-          fixed++;
-          await sleep(600);
-        } catch (err: any) {
-          console.error(`[Audit] Failed to fix issue ${issue.id}:`, err.message);
-          failed++;
-        }
+      try {
+        const result = await applyAllAuditFixes(input.runId);
+        return { success: true, ...result };
+      } catch (err: any) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: err.message });
       }
-      return { success: true, fixed, failed, total: fixableIssues.length };
     }),
 
   ignoreIssue: protectedProcedure
@@ -1925,32 +1709,87 @@ Be concise, direct, and action-oriented. When the user asks you to do something,
       switch (input.action) {
         case "run_audit": {
           if (!config?.isConnected) return { success: false, message: "Shopify not connected" };
-          // Trigger audit (simplified — returns immediately, audit runs async)
-          const runId = await createAuditRun();
-          return { success: true, message: `Site audit started (Run #${runId}). Navigate to the SEO → Audit tab to see results.`, runId };
+          try {
+            const result = await runFullAudit();
+            return { success: true, message: `Site audit complete: ${result.overallScore}/100, ${result.issueCount} issues found. See SEO → Audit tab.`, runId: result.runId };
+          } catch (err: any) {
+            return { success: false, message: `Audit failed: ${err.message}` };
+          }
         }
         case "generate_blog": {
           const topic = input.params?.topic || "home decor trends";
-          return { success: true, message: `Blog generation queued for topic: "${topic}". Navigate to the Blog module to see the draft.`, topic };
+          try {
+            const contentResponse = await invokeLLM({
+              messages: [
+                { role: "system", content: "You are an expert content writer for a premium home decor brand. Return structured JSON only." },
+                { role: "user", content: `Write an informative blog post about "${topic}" for Athena's Decor. Return JSON: { "title": string, "slug": string, "content": string (HTML), "excerpt": string, "seoTitle": string, "seoDescription": string, "tags": string[] }` },
+              ],
+              response_format: { type: "json_schema", json_schema: { name: "blog_post", strict: true, schema: { type: "object", properties: { title: { type: "string" }, slug: { type: "string" }, content: { type: "string" }, excerpt: { type: "string" }, seoTitle: { type: "string" }, seoDescription: { type: "string" }, tags: { type: "array", items: { type: "string" } } }, required: ["title", "slug", "content", "excerpt", "seoTitle", "seoDescription", "tags"], additionalProperties: false } } },
+            });
+            const raw = contentResponse.choices[0]?.message?.content;
+            const postData = JSON.parse(typeof raw === "string" ? raw : "{}");
+            const postId = await createBlogPost({ ...postData, status: "draft", generatedByAi: true } as any);
+            return { success: true, message: `Blog post "${postData.title}" created as a draft. See the Blog module.`, postId };
+          } catch (err: any) {
+            return { success: false, message: `Blog generation failed: ${err.message}` };
+          }
         }
         case "scan_inventory": {
           if (!config?.isConnected) return { success: false, message: "Shopify not connected" };
-          return { success: true, message: "Inventory scan queued. Navigate to the Inventory module to see results." };
+          try {
+            const client = await getShopifyClient(config.storeDomain, decryptCredential(config.accessToken) ?? config.accessToken);
+            const productsData = await client.getProducts(50);
+            let outOfStock = 0, lowStock = 0;
+            for (const product of productsData.products) {
+              for (const variant of product.variants) {
+                const shopifyStock = variant.inventory_quantity;
+                const status = shopifyStock === 0 ? "out_of_stock" : shopifyStock < 10 ? "low_stock" : "in_stock";
+                if (status === "out_of_stock") outOfStock++;
+                else if (status === "low_stock") lowStock++;
+                await upsertInventorySnapshot({ shopifyProductId: String(product.id), shopifyVariantId: String(variant.id), title: `${product.title} - ${variant.title}`, sku: variant.sku, supplierStock: shopifyStock, shopifyStock, status, autoUpdated: false, lastCheckedAt: new Date() });
+              }
+            }
+            return { success: true, message: `Inventory scan complete: ${outOfStock} out of stock, ${lowStock} low stock. See the Inventory module.` };
+          } catch (err: any) {
+            return { success: false, message: `Inventory scan failed: ${err.message}` };
+          }
         }
         case "run_seo": {
           const topic = input.params?.topic || "home decor";
-          return { success: true, message: `SEO keyword research queued for "${topic}". Navigate to the SEO module to see results.`, topic };
+          try {
+            const response = await invokeLLM({
+              messages: [
+                { role: "system", content: "You are an SEO expert for home decor e-commerce. Return JSON only." },
+                { role: "user", content: `Generate 15 trending SEO keywords related to "${topic}" for a home decor dropshipping store. Return JSON: { "keywords": [{ "keyword": string, "searchVolume": number, "difficulty": number, "cpc": number, "trend": "up"|"down"|"stable", "category": string }] }` },
+              ],
+              response_format: { type: "json_schema", json_schema: { name: "keywords", strict: true, schema: { type: "object", properties: { keywords: { type: "array", items: { type: "object", properties: { keyword: { type: "string" }, searchVolume: { type: "number" }, difficulty: { type: "number" }, cpc: { type: "number" }, trend: { type: "string" }, category: { type: "string" } }, required: ["keyword", "searchVolume", "difficulty", "cpc", "trend", "category"], additionalProperties: false } } }, required: ["keywords"], additionalProperties: false } } },
+            });
+            const raw = response.choices[0]?.message?.content;
+            const parsed = JSON.parse(typeof raw === "string" ? raw : "{}");
+            await insertSeoKeywords((parsed.keywords || []).map((k: any) => ({ ...k, source: "assistant" })));
+            return { success: true, message: `Found ${parsed.keywords?.length ?? 0} keywords for "${topic}". See the SEO module.`, topic };
+          } catch (err: any) {
+            return { success: false, message: `Keyword research failed: ${err.message}` };
+          }
         }
         case "optimize_ads": {
-          const campaigns = await getAdCampaigns();
-          const active = campaigns.filter((c) => c.status === "active");
-          return { success: true, message: `Budget optimization queued for ${active.length} active campaigns. Navigate to the Ads module to review recommendations.` };
+          try {
+            const { optimized, total } = await optimizeActiveCampaignBudgets();
+            return { success: true, message: `Optimized ${optimized} of ${total} active campaigns. See the Ads module for recommendations.` };
+          } catch (err: any) {
+            return { success: false, message: `Ad optimization failed: ${err.message}` };
+          }
         }
         case "apply_critical_fixes": {
           if (!config?.isConnected) return { success: false, message: "Shopify not connected" };
           const latestRun = await getLatestAuditRun();
           if (!latestRun) return { success: false, message: "No audit run found. Run a site audit first." };
-          return { success: true, message: `Applying critical fixes from audit run #${latestRun.id}. This will update product titles, meta descriptions, and alt text.`, runId: latestRun.id };
+          try {
+            const result = await applyAllAuditFixes(latestRun.id);
+            return { success: true, message: `Applied ${result.fixed} of ${result.total} auto-fixable issues from audit run #${latestRun.id}.`, runId: latestRun.id };
+          } catch (err: any) {
+            return { success: false, message: `Applying fixes failed: ${err.message}` };
+          }
         }
         default:
           return { success: false, message: "Unknown action" };
@@ -2671,6 +2510,10 @@ Return as JSON array with fields: siteName, siteUrl, pageUrl, pageTitle, type, d
 
       const content = response.choices[0].message.content;
       const parsed = JSON.parse(typeof content === "string" ? content : JSON.stringify(content));
+      // These are AI-generated candidate targets, not a verified web crawl —
+      // never populate outreachEmail with a fabricated address (the site
+      // names/URLs are plausible-sounding but unverified too). Verify each
+      // site and find a real contact before actually reaching out.
       const items = (parsed.opportunities || []).map((o: any) => ({
         campaignId: input.campaignId,
         userId: ctx.user.id,
@@ -2682,8 +2525,9 @@ Return as JSON array with fields: siteName, siteUrl, pageUrl, pageTitle, type, d
         domainAuthority: o.domainAuthority,
         relevanceScore: o.relevanceScore,
         seoValue: o.seoValue as any,
-        outreachEmail: o.outreachEmail,
+        outreachEmail: null,
         outreachMessage: o.outreachMessage,
+        notes: "AI-suggested target, not a verified site — confirm it's real and find an actual contact before reaching out.",
         status: "new" as const,
       }));
 
@@ -2834,7 +2678,10 @@ Return as JSON with field "sites" containing the array.`;
       });
       const raw = response.choices[0].message.content;
       const parsed = JSON.parse(typeof raw === "string" ? raw : JSON.stringify(raw));
-      return { sites: parsed.sites || [], total: (parsed.sites || []).length };
+      // Site names may be real, but the AI can't know an actual current
+      // contact email — never show a fabricated one as if it were verified.
+      const sites = (parsed.sites || []).map((s: any) => ({ ...s, outreachEmail: null, verified: false }));
+      return { sites, total: sites.length };
     }),
 });
 // ─── Email Campaigns Router ───────────────────────────────────────────────────
@@ -2985,6 +2832,108 @@ Return JSON with:
       return { success: true };
     }),
 
+  // Import real customers from the connected Shopify store as prospects.
+  // Only customers who opted into marketing (accepts_marketing) are added.
+  importShopifyCustomers: protectedProcedure.mutation(async ({ ctx }) => {
+    const config = await getShopifyConfig();
+    if (!config?.isConnected) throw new TRPCError({ code: "BAD_REQUEST", message: "Connect Shopify first (Settings → Integrations, or the Shopify tab)." });
+
+    const client = await getShopifyClient(config.storeDomain, decryptCredential(config.accessToken) ?? config.accessToken);
+    let allCustomers: Array<{ email: string | null; first_name: string | null; last_name: string | null; accepts_marketing: boolean; orders_count: number; tags: string }> = [];
+    let pageInfo: string | undefined;
+    for (let page = 0; page < 20; page++) { // cap at 5,000 customers per import run
+      const batch = await client.getCustomers(250, pageInfo);
+      if (!batch.customers?.length) break;
+      allCustomers = allCustomers.concat(batch.customers);
+      if (batch.customers.length < 250) break;
+      pageInfo = undefined; // Shopify's cursor pagination isn't in the trimmed response; re-run to continue past 250 if needed
+      break;
+    }
+
+    const marketable = allCustomers.filter(c => c.email && c.accepts_marketing);
+    const rows = marketable.map(c => ({
+      email: c.email as string,
+      firstName: c.first_name,
+      lastName: c.last_name,
+      company: null,
+      website: null,
+      tags: c.tags || null,
+      source: "shopify_customer" as const,
+      userId: ctx.user.id,
+      status: "active" as const,
+      score: Math.min(100, 50 + c.orders_count * 5),
+      sourceDetail: config.storeDomain,
+      lastContactedAt: null,
+    }));
+
+    const added = await insertEmailProspects(rows);
+    return { added, scanned: allCustomers.length, eligible: marketable.length };
+  }),
+
+  // Import a manually-uploaded CSV of real contacts. Expects a header row
+  // with at least an "email" column; firstName/lastName/company/tags are
+  // optional and matched by header name (case-insensitive).
+  importProspectsCsv: protectedProcedure
+    .input(z.object({ csv: z.string().min(1) }))
+    .mutation(async ({ ctx, input }) => {
+      const lines = input.csv.split(/\r?\n/).filter(l => l.trim().length > 0);
+      if (lines.length < 2) throw new TRPCError({ code: "BAD_REQUEST", message: "CSV needs a header row plus at least one data row." });
+
+      const parseLine = (line: string): string[] => {
+        const cells: string[] = [];
+        let cur = "";
+        let inQuotes = false;
+        for (let i = 0; i < line.length; i++) {
+          const ch = line[i];
+          if (ch === '"') {
+            if (inQuotes && line[i + 1] === '"') { cur += '"'; i++; }
+            else inQuotes = !inQuotes;
+          } else if (ch === "," && !inQuotes) {
+            cells.push(cur); cur = "";
+          } else {
+            cur += ch;
+          }
+        }
+        cells.push(cur);
+        return cells.map(c => c.trim());
+      };
+
+      const header = parseLine(lines[0]).map(h => h.toLowerCase());
+      const emailIdx = header.findIndex(h => h === "email");
+      if (emailIdx === -1) throw new TRPCError({ code: "BAD_REQUEST", message: 'CSV must have an "email" column.' });
+      const firstNameIdx = header.findIndex(h => h === "firstname" || h === "first_name" || h === "first name");
+      const lastNameIdx = header.findIndex(h => h === "lastname" || h === "last_name" || h === "last name");
+      const companyIdx = header.findIndex(h => h === "company");
+      const tagsIdx = header.findIndex(h => h === "tags");
+
+      const emailPattern = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+      const rows: Array<{ email: string; firstName: string | null; lastName: string | null; company: string | null; website: null; tags: string | null; source: "import"; userId: number; status: "active"; score: number; sourceDetail: null; lastContactedAt: null }> = [];
+      let invalid = 0;
+
+      for (const line of lines.slice(1)) {
+        const cells = parseLine(line);
+        const email = cells[emailIdx]?.trim();
+        if (!email || !emailPattern.test(email)) { invalid++; continue; }
+        rows.push({
+          email,
+          firstName: firstNameIdx >= 0 ? cells[firstNameIdx] || null : null,
+          lastName: lastNameIdx >= 0 ? cells[lastNameIdx] || null : null,
+          company: companyIdx >= 0 ? cells[companyIdx] || null : null,
+          website: null,
+          tags: tagsIdx >= 0 ? cells[tagsIdx] || null : null,
+          source: "import",
+          userId: ctx.user.id,
+          status: "active",
+          score: 50,
+          sourceDetail: null,
+          lastContactedAt: null,
+        });
+      }
+
+      const added = await insertEmailProspects(rows);
+      return { added, parsed: rows.length, invalid };
+    }),
+
   deleteProspect: protectedProcedure
     .input(z.object({ id: z.number() }))
     .mutation(async ({ ctx, input }) => {
@@ -3086,6 +3035,11 @@ Return as JSON array.`;
   }),
 
   // Send campaign via Resend (RESEND_API_KEY must be configured)
+  // Queues a campaign send and returns immediately — actual delivery runs
+  // in the background so sending thousands of emails doesn't block the
+  // request past any HTTP timeout. Poll getCampaign for live progress
+  // (campaign.totalSent climbs as sends complete; status flips to "sent"
+  // when the batch finishes).
   sendCampaign: protectedProcedure
     .input(z.object({
       campaignId: z.number(),
@@ -3109,7 +3063,7 @@ Return as JSON array.`;
       const skippedUnverified = allProspects.length - prospects.length;
 
       if (input.testMode) {
-        return { sent: 0, message: `Test mode: would send to ${prospects.length} prospects${skippedUnverified ? ` (${skippedUnverified} AI-generated prospects excluded — not real addresses)` : ""}`, prospects: prospects.length };
+        return { sent: 0, queued: false, message: `Test mode: would send to ${prospects.length} prospects${skippedUnverified ? ` (${skippedUnverified} AI-generated prospects excluded — not real addresses)` : ""}`, prospects: prospects.length };
       }
 
       if (!isEmailConfigured()) {
@@ -3118,51 +3072,67 @@ Return as JSON array.`;
           message: "Email delivery is not configured. Set RESEND_API_KEY (and verify a sending domain with Resend) to send real campaigns.",
         });
       }
-
-      let delivered = 0;
-      let failed = 0;
-      for (const prospect of prospects) {
-        const result = await sendEmail({
-          to: prospect.email,
-          subject: campaign.subject,
-          html: campaign.bodyHtml ?? undefined,
-          text: campaign.bodyText ?? undefined,
-          fromName: campaign.fromName ?? undefined,
-          fromEmail: campaign.fromEmail ?? undefined,
-          replyTo: campaign.replyTo ?? undefined,
-        });
-
-        await insertEmailEvent({
-          campaignId: input.campaignId,
-          prospectId: prospect.id,
-          userId: ctx.user.id,
-          event: result.success ? "sent" : "bounced",
-          clickUrl: null,
-          userAgent: null,
-          ipAddress: null,
-        });
-
-        if (result.success) {
-          delivered++;
-          await updateEmailProspect(prospect.id, { lastContactedAt: new Date() });
-        } else {
-          failed++;
-          console.warn(`[EmailCampaign] Failed to send to ${prospect.email}: ${result.error}`);
-        }
-        await sleep(150); // stay under Resend's default rate limit
+      if (prospects.length === 0) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: "No real (non-AI-generated) prospects to send to." });
       }
 
-      await updateEmailCampaign(input.campaignId, {
-        status: "sent",
-        sentAt: new Date(),
-        totalSent: (campaign.totalSent || 0) + delivered,
-        totalRecipients: prospects.length,
-      });
+      await updateEmailCampaign(input.campaignId, { status: "sending", totalRecipients: prospects.length, totalSent: 0 });
+
+      const userId = ctx.user.id;
+      const campaignId = input.campaignId;
+      const publicBaseUrl = ENV.publicBaseUrl;
+
+      // Fire-and-forget: this server is a long-running process (not
+      // serverless), so this keeps running after the response is sent.
+      (async () => {
+        let delivered = 0;
+        let failed = 0;
+        for (const prospect of prospects) {
+          const html = campaign.bodyHtml && publicBaseUrl
+            ? instrumentEmailHtml(campaign.bodyHtml, publicBaseUrl, { campaignId, prospectId: prospect.id, userId })
+            : campaign.bodyHtml ?? undefined;
+
+          const result = await sendEmail({
+            to: prospect.email,
+            subject: campaign.subject,
+            html,
+            text: campaign.bodyText ?? undefined,
+            fromName: campaign.fromName ?? undefined,
+            fromEmail: campaign.fromEmail ?? undefined,
+            replyTo: campaign.replyTo ?? undefined,
+          });
+
+          await insertEmailEvent({
+            campaignId,
+            prospectId: prospect.id,
+            userId,
+            event: result.success ? "sent" : "bounced",
+            clickUrl: null,
+            userAgent: null,
+            ipAddress: null,
+          }).catch(() => {});
+
+          if (result.success) {
+            delivered++;
+            await updateEmailProspect(prospect.id, { lastContactedAt: new Date() }).catch(() => {});
+          } else {
+            failed++;
+            console.warn(`[EmailCampaign] Failed to send to ${prospect.email}: ${result.error}`);
+          }
+
+          await updateEmailCampaign(campaignId, { totalSent: delivered }).catch(() => {});
+          await sleep(150); // stay under typical ESP rate limits
+        }
+
+        await updateEmailCampaign(campaignId, { status: "sent", sentAt: new Date(), totalSent: delivered }).catch(() => {});
+        console.log(`[EmailCampaign] Campaign ${campaignId} finished: ${delivered} delivered, ${failed} failed`);
+      })().catch(err => console.error(`[EmailCampaign] Background send crashed for campaign ${campaignId}:`, err));
 
       return {
-        sent: delivered,
-        failed,
-        message: `Campaign delivered to ${delivered} of ${prospects.length} prospects${failed ? ` (${failed} failed — check RESEND_API_KEY / verified sending domain)` : ""}${skippedUnverified ? ` (${skippedUnverified} AI-generated prospects excluded — not real addresses)` : ""}`,
+        sent: 0,
+        queued: true,
+        totalRecipients: prospects.length,
+        message: `Queued ${prospects.length} emails for delivery${skippedUnverified ? ` (${skippedUnverified} AI-generated prospects excluded — not real addresses)` : ""}. Track progress on this campaign.`,
       };
     }),
 

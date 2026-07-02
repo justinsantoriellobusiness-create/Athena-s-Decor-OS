@@ -1,0 +1,1 @@
+ALTER TABLE `sourced_products` ADD `isVerified` boolean DEFAULT false NOT NULL;

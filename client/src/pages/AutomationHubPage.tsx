@@ -52,7 +52,7 @@ const MODULES = [
     color: "text-orange-400",
     bg: "bg-orange-500/10",
     border: "border-orange-500/20",
-    description: "Discover high-DA link opportunities and submit outreach",
+    description: "AI-suggested backlink targets and draft outreach messages for you to review and send",
     defaultFreq: 48,
   },
   {
@@ -62,7 +62,7 @@ const MODULES = [
     color: "text-pink-400",
     bg: "bg-pink-500/10",
     border: "border-pink-500/20",
-    description: "AI-researches best competitors and scrapes qualified prospects",
+    description: "AI-generates candidate customer personas for research (not real scraped contacts — import real customers via Email Campaigns instead)",
     defaultFreq: 48,
   },
   {
@@ -82,7 +82,7 @@ const MODULES = [
     color: "text-yellow-400",
     bg: "bg-yellow-500/10",
     border: "border-yellow-500/20",
-    description: "Scrape best-match products from DSers, CJ, AliExpress",
+    description: "Real product search on CJ Dropshipping if connected; AI-generated ideas for DSers/AliExpress (no public search API for those)",
     defaultFreq: 24,
   },
   {
@@ -115,16 +115,10 @@ const MODULES = [
     description: "Auto-sync transactions from connected financial accounts",
     defaultFreq: 24,
   },
-  {
-    id: "ai_code_assistant" as const,
-    label: "AI Code Assistant",
-    icon: Bot,
-    color: "text-violet-400",
-    bg: "bg-violet-500/10",
-    border: "border-violet-500/20",
-    description: "Autonomously scan codebase for TypeScript errors, performance issues, security gaps, and optimization opportunities — without touching your automation preferences",
-    defaultFreq: 168,
-  },
+  // "AI Code Assistant" was removed: it prompted the LLM with a generic
+  // description of the tech stack, never the actual codebase, so every
+  // "issue" it reported was invented rather than derived from real code.
+  // Not something worth presenting as a real automation.
 ] as const;
 
 type ModuleId = typeof MODULES[number]["id"];

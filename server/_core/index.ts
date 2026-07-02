@@ -11,6 +11,7 @@ import { appRouter } from "../routers";
 import { createContext } from "./context";
 import { serveStatic, setupVite } from "./vite";
 import { registerScheduledRoutes } from "../scheduled";
+import { registerEmailTrackingRoutes } from "../emailTracking";
 import { seedDefaultSettings } from "../seed";
 import { getDb } from "../db";
 import { startInternalScheduler } from "./scheduler";
@@ -58,6 +59,7 @@ async function startServer() {
   registerOAuthRoutes(app);
   registerPasswordAuthRoutes(app);
   registerScheduledRoutes(app);
+  registerEmailTrackingRoutes(app);
   await runMigrations();
   await seedDefaultSettings();
   // tRPC API

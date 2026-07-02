@@ -8,6 +8,10 @@ import { sdk } from "./_core/sdk";
 import { invokeLLM } from "./_core/llm";
 import { generateImage } from "./_core/imageGeneration";
 import { sendEmail, isEmailConfigured } from "./_core/email";
+import { instrumentEmailHtml } from "./emailTracking";
+import { runFullAudit } from "./auditRunner";
+import { runSourcingScrape } from "./sourcingRunner";
+import { optimizeActiveCampaignBudgets } from "./adsRunner";
 import { storagePut } from "./storage";
 import { sleep } from "./rateLimiter";
 import {
@@ -38,6 +42,7 @@ import {
   insertBacklinkOpportunities,
   getAdCampaigns,
   updateAdCampaign,
+  getSourcingSpecs,
 } from "./db";
 import { getShopifyClient } from "./shopify";
 import { decryptCredential, decryptCredentials } from "./crypto";
@@ -46,6 +51,15 @@ import { fetchEbayTransactions } from "./_core/ebay";
 import { notifyOwner } from "./_core/notification";
 import { ENV } from "./_core/env";
 import { INTERNAL_CRON_SECRET_HEADER } from "./_core/scheduler";
+
+// Autonomous config rows don't self-throttle — without this check, calling
+// an /api/scheduled/* route on every poll tick would re-run every enabled
+// module every tick regardless of its configured frequencyHours.
+function isAutonomousConfigDue(config: { lastAutoRunAt: Date | string | null; frequencyHours: number }): boolean {
+  if (!config.lastAutoRunAt) return true;
+  const last = new Date(config.lastAutoRunAt).getTime();
+  return Date.now() - last >= config.frequencyHours * 3600000;
+}
 
 // Auth middleware: only the heartbeat cron system (Manus) or this app's own
 // internal scheduler (see ./_core/scheduler.ts) can call scheduled routes.
@@ -188,28 +202,9 @@ export function registerScheduledRoutes(app: Router) {
     const setting = (await getAllAutomationSettings()).find(s => s.module === "ads");
     if (!setting?.enabled) return res.json({ skipped: true });
     try {
-      const campaigns = await getAdCampaigns();
-      const active = campaigns.filter((c: any) => c.status === "active" && c.impressions > 0);
-      let optimized = 0;
-      for (const campaign of active) {
-        try {
-          const response = await invokeLLM({
-            messages: [
-              { role: "system", content: "You are a performance marketing optimization expert. Return structured JSON only." },
-              { role: "user", content: `Analyze this ad campaign and recommend budget optimization:\nCampaign: ${campaign.name}\nPlatform: ${campaign.platform}\nDaily Budget: $${campaign.dailyBudget}\nROAS: ${campaign.roas}\nCTR: ${campaign.ctr}%\nCPC: $${campaign.cpc}\nImpressions: ${campaign.impressions}\nClicks: ${campaign.clicks}\nConversions: ${campaign.conversions}\n\nReturn JSON: { "recommendedDailyBudget": number, "reasoning": string, "actions": string[] }` },
-            ],
-            response_format: { type: "json_schema", json_schema: { name: "budget_optimization", strict: true, schema: { type: "object", properties: { recommendedDailyBudget: { type: "number" }, reasoning: { type: "string" }, actions: { type: "array", items: { type: "string" } } }, required: ["recommendedDailyBudget", "reasoning", "actions"], additionalProperties: false } } },
-          });
-          const raw = response.choices[0]?.message?.content;
-          const result = JSON.parse(typeof raw === "string" ? raw : "{}");
-          await updateAdCampaign(campaign.id, { dailyBudget: result.recommendedDailyBudget, lastOptimizedAt: new Date() });
-          optimized++;
-        } catch (err: any) {
-          console.warn(`[Ads] Budget optimization failed for campaign ${campaign.id}:`, err.message);
-        }
-      }
+      const { optimized, total } = await optimizeActiveCampaignBudgets();
       await updateAutomationSetting("ads", { lastRunAt: new Date(), lastRunStatus: "success" });
-      res.json({ success: true, message: `Optimized ${optimized} of ${active.length} active campaigns`, optimized });
+      res.json({ success: true, message: `Optimized ${optimized} of ${total} active campaigns`, optimized });
     } catch (err: any) {
       await updateAutomationSetting("ads", { lastRunAt: new Date(), lastRunStatus: "error" });
       res.status(500).json({ error: err.message });
@@ -342,7 +337,7 @@ export function registerScheduledRoutes(app: Router) {
   app.post("/api/scheduled/email-scraper", cronAuth, async (req, res) => {
     try {
       const allConfigs = await getAllAutonomousConfigsAll();
-      const configs = allConfigs.filter((c: any) => c.module === "email_scraper" && c.enabled);
+      const configs = allConfigs.filter((c: any) => c.module === "email_scraper" && c.enabled && isAutonomousConfigDue(c));
       let totalFound = 0;
       for (const config of configs) {
         const moduleConfig = (config.config as any) || {};
@@ -375,7 +370,7 @@ export function registerScheduledRoutes(app: Router) {
   app.post("/api/scheduled/email-campaigns", cronAuth, async (req, res) => {
     try {
       const allConfigs = await getAllAutonomousConfigsAll();
-      const configs = allConfigs.filter((c: any) => c.module === "email_campaigns" && c.enabled);
+      const configs = allConfigs.filter((c: any) => c.module === "email_campaigns" && c.enabled && isAutonomousConfigDue(c));
       let totalSent = 0;
       for (const config of configs) {
         const moduleConfig = (config.config as any) || {};
@@ -392,8 +387,11 @@ export function registerScheduledRoutes(app: Router) {
         const campaign = await createEmailCampaign({ userId: config.userId, name: `Auto Campaign ${new Date().toLocaleDateString()}`, ...emailContent, type: campaignType as any, status: "sent", sentAt: new Date(), automationEnabled: false, frequencyDays: 30, totalSent: 0, totalDelivered: 0, totalOpened: 0, totalClicked: 0, totalBounced: 0, totalUnsubscribed: 0 });
         let batchDelivered = 0;
         for (const prospect of newProspects) {
+          const html = emailContent.bodyHtml && ENV.publicBaseUrl
+            ? instrumentEmailHtml(emailContent.bodyHtml, ENV.publicBaseUrl, { campaignId: campaign.id, prospectId: prospect.id, userId: config.userId })
+            : emailContent.bodyHtml;
           const sendResult = isEmailConfigured()
-            ? await sendEmail({ to: prospect.email, subject: emailContent.subject, html: emailContent.bodyHtml, text: emailContent.bodyText })
+            ? await sendEmail({ to: prospect.email, subject: emailContent.subject, html, text: emailContent.bodyText })
             : { success: false as const, error: "RESEND_API_KEY not configured" };
           await insertEmailEvent({ campaignId: campaign.id, prospectId: prospect.id, userId: config.userId, event: sendResult.success ? "sent" : "bounced", clickUrl: null, userAgent: null, ipAddress: null });
           if (sendResult.success) {
@@ -418,7 +416,7 @@ export function registerScheduledRoutes(app: Router) {
   app.post("/api/scheduled/backlinker", cronAuth, async (req, res) => {
     try {
       const allConfigs = await getAllAutonomousConfigsAll();
-      const configs = allConfigs.filter((c: any) => c.module === "backlinker" && c.enabled);
+      const configs = allConfigs.filter((c: any) => c.module === "backlinker" && c.enabled && isAutonomousConfigDue(c));
       let totalOpportunities = 0;
       for (const config of configs) {
         const moduleConfig = (config.config as any) || {};
@@ -431,7 +429,11 @@ export function registerScheduledRoutes(app: Router) {
         const response = await invokeLLM({ messages: [{ role: "user", content: prompt }], response_format: { type: "json_schema", json_schema: { name: "sites", strict: true, schema: { type: "object", properties: { sites: { type: "array", items: { type: "object", properties: { siteName: { type: "string" }, siteUrl: { type: "string" }, pageUrl: { type: "string" }, pageTitle: { type: "string" }, type: { type: "string" }, domainAuthority: { type: "number" }, relevanceScore: { type: "number" }, seoValue: { type: "string" }, outreachEmail: { type: "string" }, outreachMessage: { type: "string" }, whyBest: { type: "string" } }, required: ["siteName","siteUrl","pageUrl","pageTitle","type","domainAuthority","relevanceScore","seoValue","outreachEmail","outreachMessage","whyBest"], additionalProperties: false } } }, required: ["sites"], additionalProperties: false } } } });
         const raw = response.choices[0].message.content;
         const parsed = JSON.parse(typeof raw === "string" ? raw : JSON.stringify(raw));
-        const opportunities = (parsed.sites || []).map((s: any) => ({ ...s, campaignId: activeCampaign.id, userId: config.userId, status: "discovered" as const, isAutoDiscovered: true, contactedAt: null, respondedAt: null, notes: s.whyBest }));
+        // AI-suggested targets, not a verified crawl — never store a
+        // fabricated contact email as if it were real (matches the fix in
+        // discoverOpportunities/discoverBestSites). Also fixes status
+        // ("discovered" isn't a valid enum value — insert would fail).
+        const opportunities = (parsed.sites || []).map((s: any) => ({ ...s, campaignId: activeCampaign.id, userId: config.userId, status: "new" as const, outreachEmail: null, notes: `AI-suggested target, not verified — confirm it's real before reaching out. ${s.whyBest ?? ""}`.trim() }));
         if (opportunities.length > 0) await insertBacklinkOpportunities(opportunities);
         await upsertAutonomousConfig(config.userId, "backlinker", { lastAutoRunAt: new Date(), nextAutoRunAt: new Date(Date.now() + config.frequencyHours * 3600000) });
         totalOpportunities += opportunities.length;
@@ -442,11 +444,56 @@ export function registerScheduledRoutes(app: Router) {
     }
   });
 
+  // ─── Autonomous: Site Audit ───────────────────────────────────────────────────
+  app.post("/api/scheduled/site-audit", cronAuth, async (req, res) => {
+    try {
+      const allConfigs = await getAllAutonomousConfigsAll();
+      const configs = allConfigs.filter((c: any) => c.module === "site_audit" && c.enabled && isAutonomousConfigDue(c));
+      let runsCompleted = 0;
+      for (const config of configs) {
+        try {
+          await runFullAudit();
+          runsCompleted++;
+        } catch (err: any) {
+          console.warn(`[AutoSiteAudit] Run failed for user ${config.userId}:`, err.message);
+        }
+        await upsertAutonomousConfig(config.userId, "site_audit", { lastAutoRunAt: new Date(), nextAutoRunAt: new Date(Date.now() + config.frequencyHours * 3600000) });
+      }
+      res.json({ success: true, runsCompleted });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // ─── Autonomous: Product Sourcing ─────────────────────────────────────────────
+  app.post("/api/scheduled/product-sourcing", cronAuth, async (req, res) => {
+    try {
+      const allConfigs = await getAllAutonomousConfigsAll();
+      const configs = allConfigs.filter((c: any) => c.module === "product_sourcing" && c.enabled && isAutonomousConfigDue(c));
+      let specsScraped = 0;
+      for (const config of configs) {
+        const specs = await getSourcingSpecs();
+        for (const spec of specs) {
+          try {
+            await runSourcingScrape(spec.id);
+            specsScraped++;
+          } catch (err: any) {
+            console.warn(`[AutoSourcing] Scrape failed for spec ${spec.id}:`, err.message);
+          }
+        }
+        await upsertAutonomousConfig(config.userId, "product_sourcing", { lastAutoRunAt: new Date(), nextAutoRunAt: new Date(Date.now() + config.frequencyHours * 3600000) });
+      }
+      res.json({ success: true, specsScraped });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
   // ─── Autonomous: Blog ─────────────────────────────────────────────────────────
   app.post("/api/scheduled/blog-autonomous", cronAuth, async (req, res) => {
     try {
       const allConfigs = await getAllAutonomousConfigsAll();
-      const configs = allConfigs.filter((c: any) => c.module === "blog" && c.enabled);
+      const configs = allConfigs.filter((c: any) => c.module === "blog" && c.enabled && isAutonomousConfigDue(c));
       let totalPosts = 0;
       for (const config of configs) {
         const moduleConfig = (config.config as any) || {};

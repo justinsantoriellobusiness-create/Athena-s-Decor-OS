@@ -164,6 +164,9 @@ export const sourcedProducts = mysqlTable("sourced_products", {
   importStatus: mysqlEnum("importStatus", ["pending", "importing", "imported", "failed"]).default("pending").notNull(),
   shopifyProductId: varchar("shopifyProductId", { length: 128 }),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
+  // true = fetched from a real supplier API (currently CJ Dropshipping only);
+  // false = AI-generated idea/estimate, not a live product listing.
+  isVerified: boolean("isVerified").default(false).notNull(),
 });
 
 export type SourcedProduct = typeof sourcedProducts.$inferSelect;

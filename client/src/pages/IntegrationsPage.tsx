@@ -72,7 +72,7 @@ const PLATFORMS: PlatformConfig[] = [
   {
     id: "google",
     name: "Google Analytics & Search Console",
-    description: "Import real traffic, keyword rankings, and search performance data.",
+    description: "Validates and stores your token — not used anywhere else in the app yet (no traffic/keyword data is pulled in).",
     icon: BarChart3,
     color: "text-red-500",
     category: "analytics",

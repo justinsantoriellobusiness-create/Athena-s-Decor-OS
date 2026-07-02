@@ -65,7 +65,11 @@ export default function EmailCampaignsPage() {
     count: 25,
   });
 
-  const { data: analytics, refetch: refetchAnalytics } = trpc.emailCampaigns.getAnalytics.useQuery();
+  const { data: analytics, refetch: refetchAnalytics } = trpc.emailCampaigns.getAnalytics.useQuery(undefined, {
+    // Poll while a campaign is actively sending so progress updates live
+    // without the user having to manually refresh.
+    refetchInterval: query => (query.state.data?.campaigns.some(c => c.status === "sending") ? 3000 : false),
+  });
   const { data: prospects, refetch: refetchProspects } = trpc.emailCampaigns.getProspects.useQuery({});
   const { data: scrapJobs, refetch: refetchScrapJobs } = trpc.emailCampaigns.getScrapJobs.useQuery();
 
@@ -106,6 +110,34 @@ export default function EmailCampaignsPage() {
     },
     onError: (err) => toast.error(err.message),
   });
+
+  const importShopifyCustomers = trpc.emailCampaigns.importShopifyCustomers.useMutation({
+    onSuccess: (data) => {
+      toast.success(`Imported ${data.added} real Shopify customers (${data.eligible} of ${data.scanned} had marketing consent)`);
+      refetchProspects();
+    },
+    onError: (err) => toast.error(err.message),
+  });
+
+  const importProspectsCsv = trpc.emailCampaigns.importProspectsCsv.useMutation({
+    onSuccess: (data) => {
+      toast.success(`Imported ${data.added} contacts from CSV${data.invalid ? ` (${data.invalid} rows skipped — invalid email)` : ""}`);
+      refetchProspects();
+    },
+    onError: (err) => toast.error(err.message),
+  });
+
+  const handleCsvUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      const text = reader.result as string;
+      importProspectsCsv.mutate({ csv: text });
+    };
+    reader.readAsText(file);
+    e.target.value = "";
+  };
 
   const sendCampaign = trpc.emailCampaigns.sendCampaign.useMutation({
     onSuccess: (data) => {
@@ -150,7 +182,7 @@ export default function EmailCampaignsPage() {
           <TabsTrigger value="analytics">Analytics</TabsTrigger>
           <TabsTrigger value="campaigns">Campaigns ({campaigns.length})</TabsTrigger>
           <TabsTrigger value="prospects">Prospects ({totalProspects})</TabsTrigger>
-          <TabsTrigger value="scraper">Prospect Scraper</TabsTrigger>
+          <TabsTrigger value="scraper">AI Persona Ideas</TabsTrigger>
         </TabsList>
 
         {/* ── Analytics Tab ── */}
@@ -351,14 +383,25 @@ export default function EmailCampaignsPage() {
 
         {/* ── Prospects Tab ── */}
         <TabsContent value="prospects" className="space-y-4">
-          <div className="flex items-center justify-between">
+          <div className="flex items-center justify-between flex-wrap gap-2">
             <div className="text-sm text-muted-foreground">
               {activeProspects.length} active · {(prospects || []).filter(p => p.status === "unsubscribed").length} unsubscribed · {(prospects || []).filter(p => p.status === "bounced").length} bounced
             </div>
-            <Button variant="outline" size="sm" onClick={() => setScrapeDialogOpen(true)}>
-              <UserPlus className="h-3.5 w-3.5 mr-1.5" />
-              Add Prospects
-            </Button>
+            <div className="flex items-center gap-2">
+              <Button variant="outline" size="sm" disabled={importShopifyCustomers.isPending} onClick={() => importShopifyCustomers.mutate()}>
+                {importShopifyCustomers.isPending ? <RefreshCw className="h-3.5 w-3.5 mr-1.5 animate-spin" /> : <UserPlus className="h-3.5 w-3.5 mr-1.5" />}
+                Import Shopify Customers
+              </Button>
+              <label>
+                <input type="file" accept=".csv" className="hidden" onChange={handleCsvUpload} />
+                <Button variant="outline" size="sm" asChild disabled={importProspectsCsv.isPending}>
+                  <span>
+                    {importProspectsCsv.isPending ? <RefreshCw className="h-3.5 w-3.5 mr-1.5 animate-spin" /> : <UserPlus className="h-3.5 w-3.5 mr-1.5" />}
+                    Upload CSV
+                  </span>
+                </Button>
+              </label>
+            </div>
           </div>
 
           {!prospects || prospects.length === 0 ? (
@@ -367,12 +410,14 @@ export default function EmailCampaignsPage() {
                 <Users className="h-10 w-10 text-muted-foreground mb-3" />
                 <p className="font-medium">No prospects yet</p>
                 <p className="text-sm text-muted-foreground mt-1 mb-3">
-                  Use the Prospect Scraper to find potential customers from competitor sites.
+                  Import your real Shopify customers or upload a CSV of contacts to start sending real campaigns.
                 </p>
-                <Button size="sm" onClick={() => setScrapeDialogOpen(true)}>
-                  <UserPlus className="h-4 w-4 mr-2" />
-                  Scrape Prospects
-                </Button>
+                <div className="flex items-center gap-2">
+                  <Button size="sm" onClick={() => importShopifyCustomers.mutate()} disabled={importShopifyCustomers.isPending}>
+                    <UserPlus className="h-4 w-4 mr-2" />
+                    Import Shopify Customers
+                  </Button>
+                </div>
               </CardContent>
             </Card>
           ) : (
