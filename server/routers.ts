@@ -10,6 +10,7 @@ import { generateImage } from "./_core/imageGeneration";
 import { sendEmail, isEmailConfigured } from "./_core/email";
 import { fetchPayPalTransactions } from "./_core/paypal";
 import { fetchEbayTransactions } from "./_core/ebay";
+import { publishFacebookCampaign, publishTikTokCampaign } from "./_core/adPlatforms";
 import { storagePut } from "./storage";
 import {
   getShopifyConfig,
@@ -1437,6 +1438,49 @@ Return JSON: { "headline": string (max 40 chars), "bodyText": string (max 125 ch
     .mutation(async ({ input }) => {
       const id = await createAdCampaign({ ...input, status: "draft" });
       return { success: true, id };
+    }),
+
+  // Publishes a draft campaign to the real ad platform, always PAUSED.
+  // Actually going live is a deliberate manual step in the platform's own
+  // ads manager — this never turns on real spend by itself.
+  publishCampaign: protectedProcedure
+    .input(z.object({ campaignId: z.number() }))
+    .mutation(async ({ ctx, input }) => {
+      const campaigns = await getAdCampaigns();
+      const campaign = campaigns.find(c => c.id === input.campaignId);
+      if (!campaign) throw new TRPCError({ code: "NOT_FOUND" });
+
+      const tokenPlatform = campaign.platform === "instagram" ? "facebook" : campaign.platform;
+      if (tokenPlatform !== "facebook" && tokenPlatform !== "tiktok") {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: `Publishing to ${campaign.platform} isn't implemented — Google Ads requires a separate developer-token application you'd need to complete first.`,
+        });
+      }
+
+      const token = await getIntegrationToken(ctx.user.id, tokenPlatform);
+      if (!token || !token.accessToken || !token.metadata) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: `Connect ${tokenPlatform} in Settings → Integrations first (needs an access token and account ID).` });
+      }
+      const accessToken = decryptCredential(token.accessToken);
+      const metadataJson = decryptCredential(token.metadata);
+      const meta = metadataJson ? JSON.parse(metadataJson) : {};
+      if (!accessToken || !meta.accountId) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: `${tokenPlatform} connection is missing its account ID — reconnect in Integrations.` });
+      }
+
+      const publishInput = { name: campaign.name, objective: campaign.objective || "traffic", dailyBudget: campaign.dailyBudget || 0 };
+      const result = tokenPlatform === "facebook"
+        ? await publishFacebookCampaign({ accessToken, adAccountId: meta.accountId }, publishInput)
+        : await publishTikTokCampaign({ accessToken, advertiserId: meta.accountId }, publishInput);
+
+      if (!result.success) {
+        await updateAdCampaign(input.campaignId, { status: "error" });
+        throw new TRPCError({ code: "BAD_REQUEST", message: result.error });
+      }
+
+      await updateAdCampaign(input.campaignId, { status: "paused", externalCampaignId: result.platformCampaignId });
+      return { success: true, platformCampaignId: result.platformCampaignId, message: `Campaign created on ${tokenPlatform} (paused) — review and activate it in ${tokenPlatform === "facebook" ? "Meta Ads Manager" : "TikTok Ads Manager"}.` };
     }),
 
   updateCampaign: protectedProcedure

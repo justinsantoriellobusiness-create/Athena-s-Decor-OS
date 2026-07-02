@@ -61,6 +61,10 @@ export default function AdsPage() {
     onSuccess: () => { utils.ads.getCampaigns.invalidate(); },
     onError: (err) => toast.error(err.message),
   });
+  const publishCampaignMutation = trpc.ads.publishCampaign.useMutation({
+    onSuccess: (data) => { toast.success(data.message); utils.ads.getCampaigns.invalidate(); },
+    onError: (err) => toast.error(err.message),
+  });
   const generateCreativeMutation = trpc.ads.generateCreative.useMutation({
     onSuccess: () => { toast.success("Creative generated!"); utils.ads.getCreatives.invalidate(); setCreativeDialog(false); },
     onError: (err) => toast.error(err.message),
@@ -231,6 +235,13 @@ export default function AdsPage() {
                         <Button size="sm" variant="outline" className="gap-1.5 text-xs border-border/50 h-7"
                           onClick={() => updateCampaignMutation.mutate({ id: camp.id, status: "paused" })}>
                           <Pause className="w-3 h-3" />Pause
+                        </Button>
+                      ) : camp.status === "draft" && (camp.platform === "facebook" || camp.platform === "instagram" || camp.platform === "tiktok") ? (
+                        <Button size="sm" className="gap-1.5 text-xs h-7 font-semibold"
+                          style={{ background: "linear-gradient(135deg, oklch(0.82 0.12 85), oklch(0.72 0.1 70))", color: "black" }}
+                          disabled={publishCampaignMutation.isPending}
+                          onClick={() => publishCampaignMutation.mutate({ campaignId: camp.id })}>
+                          {publishCampaignMutation.isPending ? <Loader2 className="w-3 h-3 animate-spin" /> : <Play className="w-3 h-3" />}Publish (paused)
                         </Button>
                       ) : camp.status === "draft" || camp.status === "paused" ? (
                         <Button size="sm" className="gap-1.5 text-xs h-7 font-semibold"
