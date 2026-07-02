@@ -16,7 +16,6 @@ import {
   getShopifyConfig,
   upsertShopifyConfig,
   getAllAutomationSettings,
-  getAutomationSetting,
   updateAutomationSetting,
   getSeoKeywords,
   getSeoJobs,
@@ -104,8 +103,6 @@ import {
 import { getShopifyClient } from "./shopify";
 import { getConnectedShopifyClient } from "./shopifyHelper";
 import { decryptCredential } from "./crypto";
-import { parse as parseCookie } from "cookie";
-import { createHeartbeatJob, updateHeartbeatJob } from "./_core/heartbeat";
 import {
   createOptimizationJob,
   getOptimizationJob,
@@ -210,43 +207,15 @@ const schedulerRouter = router({
       cronExpression: z.string().optional(),
       config: z.any().optional(),
     }))
-    .mutation(async ({ input, ctx }) => {
+    .mutation(async ({ input }) => {
+      // Actual execution is handled by the self-hosted scheduler
+      // (server/_core/scheduler.ts), which polls this table directly by
+      // module + cronExpression — no external job registration needed.
       await updateAutomationSetting(input.module, {
         ...(input.enabled !== undefined && { enabled: input.enabled }),
         ...(input.cronExpression && { cronExpression: input.cronExpression }),
         ...(input.config !== undefined && { config: input.config }),
       });
-
-      // If enabling, create/update heartbeat job
-      if (input.enabled === true) {
-        const setting = await getAutomationSetting(input.module);
-        const sessionToken = parseCookie(ctx.req.headers.cookie ?? "")[COOKIE_NAME] ?? "";
-        const cron = input.cronExpression || setting?.cronExpression || "0 0 9 * * *";
-
-        try {
-          if (setting?.taskUid) {
-            await updateHeartbeatJob(setting.taskUid, { cron, enable: true }, sessionToken);
-          } else {
-            const job = await createHeartbeatJob({
-              name: `athenas-${input.module}-automation`,
-              cron,
-              path: `/api/scheduled/${input.module}`,
-              description: `Athena's OS — ${input.module} automation`,
-            }, sessionToken);
-            await updateAutomationSetting(input.module, { taskUid: job.taskUid });
-          }
-        } catch (err: any) {
-          console.warn(`[Scheduler] Heartbeat job creation failed for ${input.module}:`, err.message);
-        }
-      } else if (input.enabled === false) {
-        const setting = await getAutomationSetting(input.module);
-        if (setting?.taskUid) {
-          const sessionToken = parseCookie(ctx.req.headers.cookie ?? "")[COOKIE_NAME] ?? "";
-          try {
-            await updateHeartbeatJob(setting.taskUid, { enable: false }, sessionToken);
-          } catch {}
-        }
-      }
 
       return { success: true };
     }),
@@ -1283,11 +1252,14 @@ const inventoryRouter = router({
 
       const snapshots = productsData.products.flatMap((product) =>
         product.variants.map((variant) => {
-          const supplierStock = Math.floor(Math.random() * 100); // Simulated supplier check
           const shopifyStock = variant.inventory_quantity;
+          // There's no generic cross-supplier stock API — a real check
+          // would need each product mapped to its specific AutoDS/CJ/DSers
+          // listing, which isn't tracked at this scan point. Shopify's own
+          // tracked stock is the only real number available here.
           let status: "in_stock" | "low_stock" | "out_of_stock" | "unknown" = "unknown";
-          if (supplierStock === 0) status = "out_of_stock";
-          else if (supplierStock < 10) status = "low_stock";
+          if (shopifyStock === 0) status = "out_of_stock";
+          else if (shopifyStock < 10) status = "low_stock";
           else status = "in_stock";
 
           return {
@@ -1295,7 +1267,7 @@ const inventoryRouter = router({
             shopifyVariantId: String(variant.id),
             title: `${product.title} - ${variant.title}`,
             sku: variant.sku,
-            supplierStock,
+            supplierStock: shopifyStock,
             shopifyStock,
             status,
             autoUpdated: false,
@@ -3124,12 +3096,20 @@ Return as JSON array.`;
       const campaign = await getEmailCampaign(input.campaignId);
       if (!campaign || campaign.userId !== ctx.user.id) throw new TRPCError({ code: "NOT_FOUND" });
 
-      const prospects = input.prospectIds?.length
+      const allProspects = input.prospectIds?.length
         ? (await getEmailProspects(ctx.user.id, { status: "active" })).filter(p => input.prospectIds!.includes(p.id))
         : await getEmailProspects(ctx.user.id, { status: "active" });
 
+      // "competitor_scrape" prospects are AI-generated plausible-sounding
+      // profiles (see scrapeProspects below), not real scraped people —
+      // their email addresses are invented, not verified. Sending to them
+      // for real would just bounce and hurt sender reputation, so they're
+      // excluded from actual delivery regardless of what the caller asked for.
+      const prospects = allProspects.filter(p => p.source !== "competitor_scrape");
+      const skippedUnverified = allProspects.length - prospects.length;
+
       if (input.testMode) {
-        return { sent: 0, message: `Test mode: would send to ${prospects.length} prospects`, prospects: prospects.length };
+        return { sent: 0, message: `Test mode: would send to ${prospects.length} prospects${skippedUnverified ? ` (${skippedUnverified} AI-generated prospects excluded — not real addresses)` : ""}`, prospects: prospects.length };
       }
 
       if (!isEmailConfigured()) {
@@ -3182,7 +3162,7 @@ Return as JSON array.`;
       return {
         sent: delivered,
         failed,
-        message: `Campaign delivered to ${delivered} of ${prospects.length} prospects${failed ? ` (${failed} failed — check RESEND_API_KEY / verified sending domain)` : ""}`,
+        message: `Campaign delivered to ${delivered} of ${prospects.length} prospects${failed ? ` (${failed} failed — check RESEND_API_KEY / verified sending domain)` : ""}${skippedUnverified ? ` (${skippedUnverified} AI-generated prospects excluded — not real addresses)` : ""}`,
       };
     }),
 

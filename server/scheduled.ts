@@ -148,15 +148,19 @@ export function registerScheduledRoutes(app: Router) {
       let outOfStockCount = 0;
       for (const product of productsData.products) {
         for (const variant of product.variants) {
-          const supplierStock = Math.floor(Math.random() * 100);
-          const status = supplierStock === 0 ? "out_of_stock" : supplierStock < 10 ? "low_stock" : "in_stock";
+          // No generic cross-supplier stock API is available at this scan
+          // point (would need each product mapped to its specific
+          // AutoDS/CJ/DSers listing) — Shopify's own tracked stock is the
+          // only real number available here.
+          const shopifyStock = variant.inventory_quantity;
+          const status = shopifyStock === 0 ? "out_of_stock" : shopifyStock < 10 ? "low_stock" : "in_stock";
           await upsertInventorySnapshot({
             shopifyProductId: String(product.id),
             shopifyVariantId: String(variant.id),
             title: `${product.title} - ${variant.title}`,
             sku: variant.sku,
-            supplierStock,
-            shopifyStock: variant.inventory_quantity,
+            supplierStock: shopifyStock,
+            shopifyStock,
             status,
             autoUpdated: false,
             lastCheckedAt: new Date(),
@@ -376,7 +380,10 @@ export function registerScheduledRoutes(app: Router) {
       for (const config of configs) {
         const moduleConfig = (config.config as any) || {};
         const prospects = await getEmailProspects(config.userId);
-        const newProspects = prospects.filter((p: any) => !p.lastContactedAt && p.status === "active").slice(0, moduleConfig.batchSize || 100);
+        // Exclude "competitor_scrape" prospects — those are AI-generated
+        // plausible-sounding profiles, not real scraped people, so their
+        // addresses aren't real and shouldn't receive actual sends.
+        const newProspects = prospects.filter((p: any) => !p.lastContactedAt && p.status === "active" && p.source !== "competitor_scrape").slice(0, moduleConfig.batchSize || 100);
         if (newProspects.length === 0) continue;
         const campaignType = moduleConfig.campaignType || "promotional";
         const subject = moduleConfig.subject || "Discover Our Latest Home Decor Collection";

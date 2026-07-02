@@ -99,7 +99,7 @@ export default function EmailCampaignsPage() {
 
   const scrapeProspects = trpc.emailCampaigns.scrapeProspects.useMutation({
     onSuccess: (data) => {
-      toast.success(`Found ${data.prospectsFound} prospects from ${scrapeForm.competitorDomain}!`);
+      toast.success(`Generated ${data.prospectsFound} AI prospect ideas modeled on ${scrapeForm.competitorDomain}'s likely customers`);
       setScrapeDialogOpen(false);
       refetchProspects();
       refetchScrapJobs();
@@ -448,16 +448,16 @@ export default function EmailCampaignsPage() {
             <CardHeader>
               <CardTitle className="flex items-center gap-2 text-base">
                 <Search className="h-4 w-4" />
-                Competitor Prospect Scraper
+                AI Prospect Ideas
               </CardTitle>
               <CardDescription>
-                Find potential customers from competitor review sites, social followers, blog comments, and forums.
+                AI generates example customer personas based on who's likely to buy from a competitor — for targeting research and inspiration, not real people.
               </CardDescription>
             </CardHeader>
             <CardContent className="space-y-4">
               <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-600 dark:text-amber-400 flex items-start gap-2">
                 <AlertCircle className="h-3.5 w-3.5 mt-0.5 shrink-0" />
-                <span>Only use this tool for legitimate marketing outreach. Always include an unsubscribe option in your emails and comply with CAN-SPAM / GDPR regulations.</span>
+                <span>This does not scrape real people — every profile and email address below is AI-invented. Campaigns will not actually be sent to these addresses. For real outreach, add verified contacts manually or import your Shopify customers instead.</span>
               </div>
 
               <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
@@ -470,7 +470,7 @@ export default function EmailCampaignsPage() {
                   />
                 </div>
                 <div className="space-y-2">
-                  <Label>Scrape Method</Label>
+                  <Label>Persona Style</Label>
                   <Select
                     value={scrapeForm.method}
                     onValueChange={v => setScrapeForm(f => ({ ...f, method: v as any }))}
@@ -479,16 +479,16 @@ export default function EmailCampaignsPage() {
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
-                      <SelectItem value="review_sites">Review Sites (Trustpilot, etc.)</SelectItem>
-                      <SelectItem value="social_followers">Social Followers</SelectItem>
-                      <SelectItem value="blog_comments">Blog Comments</SelectItem>
-                      <SelectItem value="forum_posts">Forum Posts</SelectItem>
-                      <SelectItem value="linkedin">LinkedIn</SelectItem>
+                      <SelectItem value="review_sites">Review-site shopper</SelectItem>
+                      <SelectItem value="social_followers">Social follower</SelectItem>
+                      <SelectItem value="blog_comments">Blog reader</SelectItem>
+                      <SelectItem value="forum_posts">Forum participant</SelectItem>
+                      <SelectItem value="linkedin">Professional (LinkedIn-style)</SelectItem>
                     </SelectContent>
                   </Select>
                 </div>
                 <div className="space-y-2">
-                  <Label>Prospects to Find</Label>
+                  <Label>Ideas to Generate</Label>
                   <Select
                     value={String(scrapeForm.count)}
                     onValueChange={v => setScrapeForm(f => ({ ...f, count: parseInt(v) }))}
@@ -497,10 +497,10 @@ export default function EmailCampaignsPage() {
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
-                      <SelectItem value="10">10 prospects</SelectItem>
-                      <SelectItem value="25">25 prospects</SelectItem>
-                      <SelectItem value="50">50 prospects</SelectItem>
-                      <SelectItem value="100">100 prospects</SelectItem>
+                      <SelectItem value="10">10 ideas</SelectItem>
+                      <SelectItem value="25">25 ideas</SelectItem>
+                      <SelectItem value="50">50 ideas</SelectItem>
+                      <SelectItem value="100">100 ideas</SelectItem>
                     </SelectContent>
                   </Select>
                 </div>
@@ -518,9 +518,9 @@ export default function EmailCampaignsPage() {
                 disabled={scrapeProspects.isPending || !scrapeForm.competitorDomain}
               >
                 {scrapeProspects.isPending ? (
-                  <><RefreshCw className="h-4 w-4 mr-2 animate-spin" />Scraping prospects...</>
+                  <><RefreshCw className="h-4 w-4 mr-2 animate-spin" />Generating ideas...</>
                 ) : (
-                  <><Zap className="h-4 w-4 mr-2" />Scrape {scrapeForm.count} Prospects</>
+                  <><Zap className="h-4 w-4 mr-2" />Generate {scrapeForm.count} AI Prospect Ideas</>
                 )}
               </Button>
             </CardContent>
