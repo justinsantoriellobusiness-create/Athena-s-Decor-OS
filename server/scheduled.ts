@@ -51,6 +51,7 @@ import { fetchEbayTransactions } from "./_core/ebay";
 import { notifyOwner } from "./_core/notification";
 import { ENV } from "./_core/env";
 import { INTERNAL_CRON_SECRET_HEADER } from "./_core/scheduler";
+import { createAndPublishBlogPost } from "./blogPublish";
 
 // Autonomous config rows don't self-throttle — without this check, calling
 // an /api/scheduled/* route on every poll tick would re-run every enabled
@@ -516,7 +517,7 @@ export function registerScheduledRoutes(app: Router) {
             featuredImageAlt = `${post.title} - Home Decor`;
           }
         } catch {}
-        await createBlogPost({ title: post.title, slug: post.slug, content: post.content, excerpt: post.excerpt, seoTitle: post.seoTitle, seoDescription: post.seoDescription, tags: post.tags, featuredImageUrl, featuredImageAlt, status: autoPublish ? "published" : "draft", generatedByAi: true, publishedAt: autoPublish ? new Date() : null });
+        await createAndPublishBlogPost({ title: post.title, slug: post.slug, content: post.content, excerpt: post.excerpt, seoTitle: post.seoTitle, seoDescription: post.seoDescription, tags: post.tags, featuredImageUrl, featuredImageAlt }, autoPublish);
         await upsertAutonomousConfig(config.userId, "blog", { lastAutoRunAt: new Date(), nextAutoRunAt: new Date(Date.now() + config.frequencyHours * 3600000) });
         totalPosts++;
       }
