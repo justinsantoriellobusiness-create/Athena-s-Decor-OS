@@ -121,6 +121,7 @@ import {
   getAuditFixLog,
 } from "./optimizerDb";
 import { withRateLimit, sleep } from "./rateLimiter";
+import { createAndPublishBlogPost } from "./blogPublish";
 
 // ─── Auth Router ──────────────────────────────────────────────────────────────
 const authRouter = router({
@@ -3259,20 +3260,39 @@ const autonomousRouter = router({
       if (input.module === "email_campaigns") {
         // Auto-create and send a campaign to new prospects
         const prospects = await getEmailProspects(ctx.user.id);
-        const newProspects = prospects.filter(p => !p.lastContactedAt && p.status === "active").slice(0, moduleConfig.batchSize || 100);
+        // Exclude "competitor_scrape" prospects — those are AI-generated
+        // plausible-sounding profiles, not real scraped people, so their
+        // addresses aren't real and shouldn't receive actual sends.
+        const newProspects = prospects.filter(p => !p.lastContactedAt && p.status === "active" && p.source !== "competitor_scrape").slice(0, moduleConfig.batchSize || 100);
         if (newProspects.length === 0) return { success: true, message: "No new prospects to contact." };
         const campaignType = moduleConfig.campaignType || "promotional";
         const subject = moduleConfig.subject || "Discover Our Latest Home Decor Collection";
         const aiResp = await invokeLLM({ messages: [{ role: "system", content: "You are an expert email marketer for a premium home decor brand." }, { role: "user", content: `Write a compelling ${campaignType} email for a home decor store. Subject: "${subject}". Include: warm greeting, 2-3 product highlights with emotional storytelling, clear CTA button, and unsubscribe note. Return JSON: { subject, previewText, bodyHtml, bodyText }` }], response_format: { type: "json_schema", json_schema: { name: "email", strict: true, schema: { type: "object", properties: { subject: { type: "string" }, previewText: { type: "string" }, bodyHtml: { type: "string" }, bodyText: { type: "string" } }, required: ["subject","previewText","bodyHtml","bodyText"], additionalProperties: false } } } });
         const emailContent = JSON.parse(typeof aiResp.choices[0].message.content === "string" ? aiResp.choices[0].message.content : JSON.stringify(aiResp.choices[0].message.content));
         const campaign = await createEmailCampaign({ userId: ctx.user.id, name: `Auto Campaign ${new Date().toLocaleDateString()}`, ...emailContent, type: campaignType as any, status: "sent", sentAt: new Date(), automationEnabled: false, frequencyDays: 30, totalSent: 0, totalDelivered: 0, totalOpened: 0, totalClicked: 0, totalBounced: 0, totalUnsubscribed: 0 });
+        let delivered = 0;
         for (const prospect of newProspects) {
-          await insertEmailEvent({ campaignId: campaign.id, prospectId: prospect.id, userId: ctx.user.id, event: "sent", clickUrl: null, userAgent: null, ipAddress: null });
-          await updateEmailProspect(prospect.id, { lastContactedAt: new Date() });
+          const html = emailContent.bodyHtml && ENV.publicBaseUrl
+            ? instrumentEmailHtml(emailContent.bodyHtml, ENV.publicBaseUrl, { campaignId: campaign.id, prospectId: prospect.id, userId: ctx.user.id })
+            : emailContent.bodyHtml;
+          const sendResult = isEmailConfigured()
+            ? await sendEmail({ to: prospect.email, subject: emailContent.subject, html, text: emailContent.bodyText })
+            : { success: false as const, error: "RESEND_API_KEY not configured" };
+          await insertEmailEvent({ campaignId: campaign.id, prospectId: prospect.id, userId: ctx.user.id, event: sendResult.success ? "sent" : "bounced", clickUrl: null, userAgent: null, ipAddress: null });
+          if (sendResult.success) {
+            delivered++;
+            await updateEmailProspect(prospect.id, { lastContactedAt: new Date() });
+          } else {
+            console.warn(`[EmailCampaign] Failed to send to ${prospect.email}: ${sendResult.error}`);
+          }
+          await sleep(150);
         }
-        await updateEmailCampaign(campaign.id, { totalSent: newProspects.length, totalDelivered: newProspects.length });
+        await updateEmailCampaign(campaign.id, { totalSent: delivered, totalDelivered: delivered });
         await upsertAutonomousConfig(ctx.user.id, "email_campaigns", { lastAutoRunAt: new Date() });
-        return { success: true, message: `Sent campaign to ${newProspects.length} prospects.` };
+        if (!isEmailConfigured()) {
+          return { success: false, message: `Campaign created, but RESEND_API_KEY isn't configured — no email was actually sent to any of the ${newProspects.length} prospects.` };
+        }
+        return { success: true, message: `Sent campaign to ${delivered} of ${newProspects.length} prospects.` };
       }
 
       if (input.module === "backlinker") {
@@ -3296,10 +3316,16 @@ const autonomousRouter = router({
         const response = await invokeLLM({ messages: [{ role: "system", content: "You are an expert content marketer for a premium home decor brand." }, { role: "user", content: prompt }], response_format: { type: "json_schema", json_schema: { name: "post", strict: true, schema: { type: "object", properties: { title: { type: "string" }, metaTitle: { type: "string" }, metaDescription: { type: "string" }, content: { type: "string" }, tags: { type: "array", items: { type: "string" } }, excerpt: { type: "string" } }, required: ["title","metaTitle","metaDescription","content","tags","excerpt"], additionalProperties: false } } } });
         const raw = response.choices[0].message.content;
         const post = JSON.parse(typeof raw === "string" ? raw : JSON.stringify(raw));
-        const { createBlogPost, updateBlogPost } = await import("./db");
-        const postId = await createBlogPost({ title: post.title, content: post.content, seoTitle: post.metaTitle, seoDescription: post.metaDescription, excerpt: post.excerpt, tags: Array.isArray(post.tags) ? post.tags : post.tags?.split(",") || [], status: autoPublish ? "published" : "draft", shopifyBlogId: null, shopifyArticleId: null, featuredImageUrl: null, featuredImageAlt: null, generatedByAi: true, publishedAt: autoPublish ? new Date() : null });
+        const tags = Array.isArray(post.tags) ? post.tags : post.tags?.split(",") || [];
+        const { postId, published } = await createAndPublishBlogPost(
+          { title: post.title, content: post.content, seoTitle: post.metaTitle, seoDescription: post.metaDescription, excerpt: post.excerpt, tags },
+          autoPublish
+        );
         await upsertAutonomousConfig(ctx.user.id, "blog", { lastAutoRunAt: new Date() });
-        return { success: true, message: `Blog post "${post.title}" ${autoPublish ? "published" : "saved as draft"}.`, postId };
+        if (autoPublish && !published) {
+          return { success: true, message: `Blog post "${post.title}" saved as a draft — Shopify isn't connected (or the publish call failed), so it wasn't actually published.`, postId };
+        }
+        return { success: true, message: `Blog post "${post.title}" ${published ? "published to Shopify" : "saved as draft"}.`, postId };
       }
 
             if (input.module === "seo") {
