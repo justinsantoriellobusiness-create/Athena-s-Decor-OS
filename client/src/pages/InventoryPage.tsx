@@ -15,7 +15,6 @@ function StockBadge({ status }: { status: string }) {
 
 export default function InventoryPage() {
   const [filter, setFilter] = useState<"all" | "in_stock" | "low_stock" | "out_of_stock">("all");
-  const [supplierFilter, setSupplierFilter] = useState<string>("all");
   const utils = trpc.useUtils();
 
   const { data: snapshots, isLoading } = trpc.inventory.getSnapshots.useQuery();
@@ -29,12 +28,7 @@ export default function InventoryPage() {
     onError: (err) => toast.error(err.message),
   });
 
-  const allSuppliers = Array.from(new Set((snapshots || []).map((s: any) => s.supplier || s.supplierSource || "Unknown").filter(Boolean)));
-  const filtered = (snapshots || []).filter((s: any) => {
-    const statusMatch = filter === "all" || s.status === filter;
-    const supplierMatch = supplierFilter === "all" || (s.supplier || s.supplierSource || "Unknown") === supplierFilter;
-    return statusMatch && supplierMatch;
-  });
+  const filtered = (snapshots || []).filter((s: any) => filter === "all" || s.status === filter);
 
   const counts = {
     all: snapshots?.length ?? 0,
@@ -52,7 +46,7 @@ export default function InventoryPage() {
       <div className="flex items-start justify-between gap-4">
         <div>
           <h1 className="text-2xl font-bold text-white tracking-tight">Inventory Tracker</h1>
-          <p className="text-white/40 text-sm mt-1">Monitor supplier stock, auto-update Shopify when items run out</p>
+          <p className="text-white/40 text-sm mt-1">Track Shopify stock levels and auto-draft products when they run out</p>
         </div>
         <div className="flex items-center gap-3">
           {invSetting && (
@@ -125,8 +119,6 @@ export default function InventoryPage() {
                 <tr className="border-b border-border/30">
                   <th className="text-left px-5 py-3 text-muted-foreground font-medium">Product / Variant</th>
                   <th className="text-left px-4 py-3 text-muted-foreground font-medium">SKU</th>
-                  <th className="text-left px-4 py-3 text-muted-foreground font-medium">Supplier</th>
-                  <th className="text-right px-4 py-3 text-muted-foreground font-medium">Supplier Stock</th>
                   <th className="text-right px-4 py-3 text-muted-foreground font-medium">Shopify Stock</th>
                   <th className="text-center px-4 py-3 text-muted-foreground font-medium">Status</th>
                   <th className="text-right px-5 py-3 text-muted-foreground font-medium">Last Checked</th>
@@ -138,22 +130,11 @@ export default function InventoryPage() {
                   <tr key={snap.id} className="border-b border-border/20 hover:bg-secondary/30 transition-colors">
                     <td className="px-5 py-3 font-medium text-foreground max-w-[200px] truncate">{snap.title}</td>
                     <td className="px-4 py-3 text-muted-foreground font-mono">{snap.sku || "—"}</td>
-                    <td className="px-4 py-3">
-                      <span className={cn("text-xs px-1.5 py-0.5 rounded font-medium",
-                        (snap.supplier || snap.supplierSource) === "dsers" ? "bg-blue-500/10 text-blue-400" :
-                        (snap.supplier || snap.supplierSource) === "cj" ? "bg-orange-500/10 text-orange-400" :
-                        (snap.supplier || snap.supplierSource) === "aliexpress" ? "bg-red-500/10 text-red-400" :
-                        "bg-muted text-muted-foreground"
-                      )}>
-                        {snap.supplier || snap.supplierSource || "—"}
-                      </span>
-                    </td>
                     <td className="px-4 py-3 text-right">
-                      <span className={cn("font-semibold", snap.supplierStock === 0 ? "text-red-400" : snap.supplierStock < 10 ? "text-yellow-400" : "text-green-400")}>
-                        {snap.supplierStock}
+                      <span className={cn("font-semibold", snap.shopifyStock === 0 ? "text-red-400" : snap.shopifyStock < 10 ? "text-yellow-400" : "text-green-400")}>
+                        {snap.shopifyStock}
                       </span>
                     </td>
-                    <td className="px-4 py-3 text-right text-muted-foreground">{snap.shopifyStock}</td>
                     <td className="px-4 py-3 text-center"><StockBadge status={snap.status} /></td>
                     <td className="px-5 py-3 text-right text-muted-foreground">
                       {snap.lastCheckedAt ? new Date(snap.lastCheckedAt).toLocaleString() : "—"}

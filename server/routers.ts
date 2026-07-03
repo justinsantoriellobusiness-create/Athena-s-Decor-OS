@@ -3253,7 +3253,7 @@ const autonomousRouter = router({
           totalFound += added;
         }
         await upsertAutonomousConfig(ctx.user.id, "email_scraper", { lastAutoRunAt: new Date() });
-        return { success: true, message: `Scraped ${totalFound} new prospects from ${domains.length} competitor sites.` };
+        return { success: true, message: `Generated ${totalFound} AI prospect ideas modeled on ${domains.length} competitor site(s) — these are AI-invented personas for research, not real contacts, and are excluded from real sends.` };
       }
 
       if (input.module === "email_campaigns") {
