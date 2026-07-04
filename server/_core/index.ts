@@ -11,7 +11,7 @@ import { createContext } from "./context";
 import { serveStatic, setupVite } from "./vite";
 import { registerScheduledRoutes } from "../scheduled";
 import { registerEmailTrackingRoutes } from "../emailTracking";
-import { seedDefaultSettings } from "../seed";
+import { seedDefaultSettings, seedIntegrationsFromEnv } from "../seed";
 import { getDb } from "../db";
 import { startInternalScheduler } from "./scheduler";
 
@@ -60,6 +60,7 @@ async function startServer() {
   registerEmailTrackingRoutes(app);
   await runMigrations();
   await seedDefaultSettings();
+  await seedIntegrationsFromEnv();
   // tRPC API
   app.get("/api/health", (_req, res) => {
     res.json({ status: "ok" });
