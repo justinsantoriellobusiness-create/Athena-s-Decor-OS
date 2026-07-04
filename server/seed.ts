@@ -29,7 +29,7 @@ export async function seedDefaultSettings() {
 /**
  * Auto-connect integrations from environment variables.
  * Runs on every startup — safe to re-run (uses upsert).
- * Credentials are encrypted with JWT_SECRET before storage.
+ * Credentials are AES-256-GCM encrypted with JWT_SECRET before storage.
  */
 export async function seedIntegrationsFromEnv() {
   if (!ENV.cookieSecret) {
@@ -37,15 +37,18 @@ export async function seedIntegrationsFromEnv() {
     return;
   }
 
-  // ── Shopify ──────────────────────────────────────────────────────────────
+  const { upsertShopifyConfig, upsertSourcingAppCredential } = await import("./db");
+
+  // ── Shopify ──────────────────────────────────────────────────────────────────
   const shopifyDomain = process.env.SHOPIFY_STORE_DOMAIN;
   const shopifyToken = process.env.SHOPIFY_ACCESS_TOKEN;
   if (shopifyDomain && shopifyToken) {
     try {
-      const { upsertShopifyConfig } = await import("./db");
       await upsertShopifyConfig({
         storeDomain: shopifyDomain,
         accessToken: encryptCredential(shopifyToken),
+        isConnected: true,
+        lastSyncAt: new Date(),
       });
       console.log("[Seed] Shopify connected:", shopifyDomain);
     } catch (err) {
@@ -53,16 +56,17 @@ export async function seedIntegrationsFromEnv() {
     }
   }
 
-  // ── CJ Dropshipping ──────────────────────────────────────────────────────
+  // ── CJ Dropshipping ──────────────────────────────────────────────────────────
+  // apiKey = encrypted API key, apiSecret = CJ email (identifier), isConnected = true
   const cjApiKey = process.env.CJ_API_KEY;
   const cjEmail = process.env.CJ_EMAIL;
   if (cjApiKey && cjEmail) {
     try {
-      const { upsertSourcingAppCredential } = await import("./db");
       await upsertSourcingAppCredential("cj", {
-        email: cjEmail,
         apiKey: encryptCredential(cjApiKey),
-        status: "active",
+        apiSecret: cjEmail,
+        isConnected: true,
+        lastTestedAt: new Date(),
       });
       console.log("[Seed] CJ Dropshipping connected:", cjEmail);
     } catch (err) {
@@ -70,16 +74,17 @@ export async function seedIntegrationsFromEnv() {
     }
   }
 
-  // ── DSers ─────────────────────────────────────────────────────────────────
+  // ── DSers ─────────────────────────────────────────────────────────────────────
+  // apiKey = encrypted password, storeId = DSers email (identifier), isConnected = true
   const dsersEmail = process.env.DSERS_EMAIL;
   const dsersPassword = process.env.DSERS_PASSWORD;
   if (dsersEmail && dsersPassword) {
     try {
-      const { upsertSourcingAppCredential } = await import("./db");
       await upsertSourcingAppCredential("dsers", {
-        email: dsersEmail,
         apiKey: encryptCredential(dsersPassword),
-        status: "active",
+        storeId: dsersEmail,
+        isConnected: true,
+        lastTestedAt: new Date(),
       });
       console.log("[Seed] DSers connected:", dsersEmail);
     } catch (err) {
