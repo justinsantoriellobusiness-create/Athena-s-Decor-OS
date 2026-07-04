@@ -9,7 +9,7 @@ import { appRouter } from "../routers";
 import { createContext } from "./context";
 import { serveStatic, setupVite } from "./vite";
 import { registerScheduledRoutes } from "../scheduled";
-import { seedDefaultSettings } from "../seed";
+import { seedDefaultSettings, seedIntegrationsFromEnv } from "../seed";
 
 function isPortAvailable(port: number): Promise<boolean> {
   return new Promise(resolve => {
@@ -40,6 +40,7 @@ async function startServer() {
   registerOAuthRoutes(app);
   registerScheduledRoutes(app);
   await seedDefaultSettings();
+  await seedIntegrationsFromEnv();
   // tRPC API
   app.use(
     "/api/trpc",
