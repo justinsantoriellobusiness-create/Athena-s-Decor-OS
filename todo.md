@@ -145,8 +145,8 @@
 - [x] Audit Shopify credentials — encrypt access token at rest (connect encrypts via encryptCredential), never exposed in list responses
 - [x] Audit eBay/PayPal credentials — financial account credentials encrypted via encryptCredentials on insert, stripped in getAccounts
 - [x] Verify all input validation (Zod schemas) on every mutation — all mutations accepting input use z.object; input-less mutations take no client data
-- [ ] Verify all error handling — no unhandled promise rejections, no raw error messages to client
-- [ ] Fix any broken tRPC procedure calls in frontend (wrong procedure names, wrong input shapes)
+- [x] Verify all error handling — no raw error messages to client: added tRPC errorFormatter masking INTERNAL_SERVER_ERROR (message + stack stripped) and onError server-side logging; background sends already .catch() their promises
+- [x] Fix any broken tRPC procedure calls in frontend — verified via fully-typed tRPC client: `npx tsc --noEmit` passes with 0 errors, so procedure names/input shapes all match the router
 - [ ] Verify all loading/empty/error states on every page
 - [ ] Verify Shopify connect flow works end-to-end
 - [ ] Verify Blog generate flow works end-to-end
@@ -159,7 +159,7 @@
 - [ ] Verify AI Assistant can execute all actions
 - [ ] Verify Scheduler enable/disable toggles work
 - [ ] Security: add rate limiting awareness to sensitive endpoints
-- [ ] Security: ensure JWT_SECRET is used for all session cookies
+- [x] Security: ensure JWT_SECRET is used for all session cookies — cookieSecret derives from JWT_SECRET (env.ts), session JWTs signed via jose in sdk.ts, credential encryption key derived from it (crypto.ts), scheduler refuses to run without it
 - [x] Security: verify no API keys are logged to console — grep confirms no credential values in console.log/error/warn
 - [x] Final TypeScript check (0 errors)
 - [x] All tests passing — 6/6 (Zapier credential tests now skip gracefully when env secrets absent, validate format when present)
