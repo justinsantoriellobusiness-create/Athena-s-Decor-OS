@@ -28,13 +28,37 @@ export async function seedDefaultSettings() {
 }
 
 /**
+ * Fetch a fresh Shopify access token using OAuth client credentials.
+ * Tokens expire every 24h — called on every boot so they're always fresh.
+ */
+async function fetchShopifyAccessToken(shop: string, clientId: string, clientSecret: string): Promise<string | null> {
+  try {
+    const res = await fetch(`https://${shop}/admin/oauth/access_token`, {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({
+        grant_type: "client_credentials",
+        client_id: clientId,
+        client_secret: clientSecret,
+      }),
+    });
+    if (!res.ok) {
+      const text = await res.text();
+      console.warn(`[Seed] Shopify OAuth failed (${res.status}): ${text}`);
+      return null;
+    }
+    const data = await res.json() as { access_token?: string };
+    return data.access_token ?? null;
+  } catch (err) {
+    console.warn("[Seed] Shopify OAuth request failed:", err);
+    return null;
+  }
+}
+
+/**
  * Auto-connect integrations from environment variables.
  * Runs on every startup — safe to re-run (uses upsert).
  * Credentials are AES-256-GCM encrypted with JWT_SECRET before storage.
- *
- * Writes to TWO places per integration:
- *   1. shopifyConfig / sourcingAppCredentials — used by automations
- *   2. integrationTokens (per admin user) — read by IntegrationsPage UI
  */
 export async function seedIntegrationsFromEnv() {
   if (!ENV.cookieSecret) {
@@ -65,46 +89,63 @@ export async function seedIntegrationsFromEnv() {
     // Users table may not exist yet on very first migration boot
   }
 
-  if (!adminUserId) {
-    console.warn("[Seed] No user found yet — integrationTokens skipped (will populate on next restart after first login)");
-  }
-
   // ── Shopify ──────────────────────────────────────────────────────────────────
   const shopifyDomain = process.env.SHOPIFY_STORE_DOMAIN;
-  const shopifyToken = process.env.SHOPIFY_ACCESS_TOKEN;
-  if (shopifyDomain && shopifyToken) {
+  const shopifyClientId = process.env.SHOPIFY_CLIENT_ID;
+  const shopifyClientSecret = process.env.SHOPIFY_CLIENT_SECRET;
+  // Fall back to static token if no client credentials provided
+  const shopifyStaticToken = process.env.SHOPIFY_ACCESS_TOKEN;
+
+  if (shopifyDomain && (shopifyClientId || shopifyStaticToken)) {
     try {
-      const { getShopifyClient } = await import("./shopify");
-      const client = await getShopifyClient(shopifyDomain, shopifyToken);
+      let shopifyToken = shopifyStaticToken ?? null;
 
-      let productCount = 0;
-      try {
-        const countData = await client.getProductCount();
-        productCount = countData.count ?? 0;
-      } catch (countErr) {
-        console.warn("[Seed] Shopify product count failed (check read_products scope):", countErr);
+      // Prefer OAuth client credentials — auto-refreshes on every boot
+      if (shopifyClientId && shopifyClientSecret) {
+        const freshToken = await fetchShopifyAccessToken(shopifyDomain, shopifyClientId, shopifyClientSecret);
+        if (freshToken) {
+          shopifyToken = freshToken;
+          console.log("[Seed] Shopify: fetched fresh OAuth token via client credentials");
+        } else {
+          console.warn("[Seed] Shopify: OAuth failed, falling back to SHOPIFY_ACCESS_TOKEN");
+        }
       }
 
-      const encryptedToken = encryptCredential(shopifyToken);
+      if (!shopifyToken) {
+        console.warn("[Seed] Shopify: no valid token available — skipping");
+      } else {
+        const { getShopifyClient } = await import("./shopify");
+        const client = await getShopifyClient(shopifyDomain, shopifyToken);
 
-      await upsertShopifyConfig({
-        storeDomain: shopifyDomain,
-        accessToken: encryptedToken,
-        isConnected: true,
-        lastSyncAt: new Date(),
-        productCount,
-      });
+        let productCount = 0;
+        try {
+          const countData = await client.getProductCount();
+          productCount = countData.count ?? 0;
+        } catch (countErr) {
+          console.warn("[Seed] Shopify product count failed:", countErr);
+        }
 
-      if (adminUserId !== null) {
-        await upsertIntegrationToken(adminUserId, "shopify", {
+        const encryptedToken = encryptCredential(shopifyToken);
+
+        await upsertShopifyConfig({
+          storeDomain: shopifyDomain,
           accessToken: encryptedToken,
-          shopDomain: shopifyDomain,
-          isActive: true,
-          connectedAt: new Date(),
+          isConnected: true,
+          lastSyncAt: new Date(),
+          productCount,
         });
-      }
 
-      console.log(`[Seed] Shopify connected: ${shopifyDomain} (${productCount} products)`);
+        if (adminUserId !== null) {
+          await upsertIntegrationToken(adminUserId, "shopify", {
+            accessToken: encryptedToken,
+            shopDomain: shopifyDomain,
+            isActive: true,
+            connectedAt: new Date(),
+          });
+        }
+
+        console.log(`[Seed] Shopify connected: ${shopifyDomain} (${productCount} products)`);
+      }
     } catch (err) {
       console.warn("[Seed] Failed to seed Shopify config:", err);
     }
@@ -116,14 +157,12 @@ export async function seedIntegrationsFromEnv() {
   if (cjApiKey && cjEmail) {
     try {
       const encryptedKey = encryptCredential(cjApiKey);
-
       await upsertSourcingAppCredential("cj", {
         apiKey: encryptedKey,
         apiSecret: cjEmail,
         isConnected: true,
         lastTestedAt: new Date(),
       });
-
       if (adminUserId !== null) {
         await upsertIntegrationToken(adminUserId, "cj_dropshipping", {
           accessToken: encryptedKey,
@@ -131,7 +170,6 @@ export async function seedIntegrationsFromEnv() {
           connectedAt: new Date(),
         });
       }
-
       console.log("[Seed] CJ Dropshipping connected:", cjEmail);
     } catch (err) {
       console.warn("[Seed] Failed to seed CJ credentials:", err);
@@ -144,14 +182,12 @@ export async function seedIntegrationsFromEnv() {
   if (dsersEmail && dsersPassword) {
     try {
       const encryptedPass = encryptCredential(dsersPassword);
-
       await upsertSourcingAppCredential("dsers", {
         apiKey: encryptedPass,
         storeId: dsersEmail,
         isConnected: true,
         lastTestedAt: new Date(),
       });
-
       if (adminUserId !== null) {
         await upsertIntegrationToken(adminUserId, "dsers", {
           accessToken: encryptedPass,
@@ -159,7 +195,6 @@ export async function seedIntegrationsFromEnv() {
           connectedAt: new Date(),
         });
       }
-
       console.log("[Seed] DSers connected:", dsersEmail);
     } catch (err) {
       console.warn("[Seed] Failed to seed DSers credentials:", err);
