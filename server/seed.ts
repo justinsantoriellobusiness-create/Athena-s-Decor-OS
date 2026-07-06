@@ -74,21 +74,18 @@ export async function seedIntegrationsFromEnv() {
   const shopifyToken = process.env.SHOPIFY_ACCESS_TOKEN;
   if (shopifyDomain && shopifyToken) {
     try {
-      const encryptedToken = encryptCredential(shopifyToken);
+      const { getShopifyClient } = await import("./shopify");
+      const client = await getShopifyClient(shopifyDomain, shopifyToken);
 
-      // Fetch live product count on startup
       let productCount = 0;
       try {
-        const res = await fetch(`https://${shopifyDomain}/admin/api/2024-01/products/count.json`, {
-          headers: { "X-Shopify-Access-Token": shopifyToken },
-        });
-        if (res.ok) {
-          const data = await res.json() as { count?: number };
-          productCount = data.count ?? 0;
-        }
-      } catch {
-        // Non-fatal — store 0 if Shopify is unreachable at boot
+        const countData = await client.getProductCount();
+        productCount = countData.count ?? 0;
+      } catch (countErr) {
+        console.warn("[Seed] Shopify product count failed (check read_products scope):", countErr);
       }
+
+      const encryptedToken = encryptCredential(shopifyToken);
 
       await upsertShopifyConfig({
         storeDomain: shopifyDomain,
