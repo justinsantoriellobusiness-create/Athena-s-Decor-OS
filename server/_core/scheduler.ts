@@ -26,10 +26,13 @@ function matchesField(field: string, value: number): boolean {
   });
 }
 
-// 6-field cron: sec min hour dom mon dow. Seconds are ignored since we only
-// poll once per minute; a job is "due" if the current minute matches.
+// Accepts standard 5-field cron (min hour dom mon dow) or 6-field with a
+// leading seconds field (ignored — we only poll once per minute). Every
+// module seeded in seed.ts uses 5-field expressions; requiring 6 fields
+// meant no scheduled module ever actually fired.
 function isDueThisMinute(cronExpression: string, now: Date): boolean {
-  const fields = cronExpression.trim().split(/\s+/);
+  let fields = cronExpression.trim().split(/\s+/);
+  if (fields.length === 5) fields = ["0", ...fields];
   if (fields.length !== 6) return false;
   const [, min, hour, dom, mon, dow] = fields;
   return (
@@ -114,6 +117,10 @@ function tickAutonomous(port: number) {
   }
 }
 
+let legacyIntervalHandle: ReturnType<typeof setInterval> | null = null;
+let autonomousIntervalHandle: ReturnType<typeof setInterval> | null = null;
+let initialTimeoutHandle: ReturnType<typeof setTimeout> | null = null;
+
 export function startInternalScheduler(port: number) {
   if (!ENV.cookieSecret) {
     console.warn(
@@ -121,14 +128,25 @@ export function startInternalScheduler(port: number) {
     );
     return;
   }
-  setInterval(() => {
+  legacyIntervalHandle = setInterval(() => {
     tick(port).catch(error => console.error("[Scheduler] tick failed:", error));
   }, CHECK_INTERVAL_MS);
-  setInterval(() => {
+  autonomousIntervalHandle = setInterval(() => {
     tickAutonomous(port);
   }, AUTONOMOUS_CHECK_INTERVAL_MS);
   // Fire once shortly after boot too, so enabling a module doesn't require
   // waiting a full interval before its first check.
-  setTimeout(() => tickAutonomous(port), 15_000);
+  initialTimeoutHandle = setTimeout(() => tickAutonomous(port), 15_000);
   console.log("[Scheduler] Internal automation scheduler started (legacy: polls every 60s, autonomous hub: polls every 5m).");
+}
+
+// Stops all scheduling loops so a graceful shutdown doesn't fire a new tick
+// mid-drain — does not cancel already-in-flight scheduled-route requests.
+export function stopInternalScheduler() {
+  if (legacyIntervalHandle) clearInterval(legacyIntervalHandle);
+  if (autonomousIntervalHandle) clearInterval(autonomousIntervalHandle);
+  if (initialTimeoutHandle) clearTimeout(initialTimeoutHandle);
+  legacyIntervalHandle = null;
+  autonomousIntervalHandle = null;
+  initialTimeoutHandle = null;
 }

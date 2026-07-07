@@ -13,7 +13,7 @@ import { registerScheduledRoutes } from "../scheduled";
 import { registerEmailTrackingRoutes } from "../emailTracking";
 import { seedDefaultSettings, seedIntegrationsFromEnv } from "../seed";
 import { getDb } from "../db";
-import { startInternalScheduler } from "./scheduler";
+import { startInternalScheduler, stopInternalScheduler } from "./scheduler";
 
 function isPortAvailable(port: number): Promise<boolean> {
   return new Promise(resolve => {
@@ -34,6 +34,9 @@ async function findAvailablePort(startPort: number = 3000): Promise<number> {
   throw new Error(`No available port found starting from ${startPort}`);
 }
 
+// Migration failure must halt boot: continuing on a possibly-mismatched
+// schema means every query touching a changed table fails at request time
+// instead of the deploy failing loudly and visibly in Railway.
 async function runMigrations() {
   const db = await getDb();
   if (!db) {
@@ -45,6 +48,7 @@ async function runMigrations() {
     console.log("[Migrate] Migrations applied successfully");
   } catch (error) {
     console.error("[Migrate] Failed to apply migrations:", error);
+    throw error;
   }
 }
 
@@ -91,6 +95,27 @@ async function startServer() {
     console.log(`Server running on http://localhost:${port}/`);
     startInternalScheduler(port);
   });
+
+  // Stop scheduling new automation ticks and let Railway finish an
+  // in-flight request before the process is killed on redeploy — without
+  // this, a deploy landing mid-fulfillment-tick could be interrupted after
+  // a CJ order was placed but before the Shopify idempotency tag was
+  // written, causing the next boot to retry and double-order.
+  const shutdown = (signal: string) => {
+    console.log(`[Shutdown] ${signal} received — stopping scheduler and draining requests`);
+    stopInternalScheduler();
+    server.close(() => {
+      console.log("[Shutdown] Server closed");
+      process.exit(0);
+    });
+    // Force-exit if close() hangs (e.g. a long-running connection never drains)
+    setTimeout(() => process.exit(1), 10_000).unref();
+  };
+  process.on("SIGTERM", () => shutdown("SIGTERM"));
+  process.on("SIGINT", () => shutdown("SIGINT"));
 }
 
-startServer().catch(console.error);
+startServer().catch(error => {
+  console.error("[Boot] Fatal startup error:", error);
+  process.exit(1);
+});
