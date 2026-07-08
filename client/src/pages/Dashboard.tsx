@@ -4,7 +4,7 @@ import { useLocation } from "wouter";
 import {
   ShoppingBag, Search, FileText, Package, BarChart3, Megaphone, Settings,
   TrendingUp, Zap, CheckCircle2, AlertCircle, Clock, ArrowRight, RefreshCw,
-  Activity
+  Activity, Truck, DollarSign, ShieldCheck
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -12,11 +12,14 @@ import { cn } from "@/lib/utils";
 
 const moduleCards = [
   { key: "shopify", label: "Shopify", icon: ShoppingBag, href: "/shopify", color: "oklch(0.65 0.18 145)" },
+  { key: "fulfillment", label: "Fulfillment", icon: Truck, href: "/scheduler", color: "oklch(0.7 0.17 160)" },
   { key: "seo", label: "SEO", icon: Search, href: "/seo", color: "oklch(0.65 0.18 240)" },
   { key: "blog", label: "Blog", icon: FileText, href: "/blog", color: "oklch(0.78 0.15 65)" },
   { key: "sourcing", label: "Sourcing", icon: Package, href: "/sourcing", color: "oklch(0.72 0.18 300)" },
   { key: "inventory", label: "Inventory", icon: BarChart3, href: "/inventory", color: "oklch(0.82 0.12 85)" },
+  { key: "accounting", label: "Accounting", icon: DollarSign, href: "/accounting", color: "oklch(0.72 0.16 145)" },
   { key: "ads", label: "Ads", icon: Megaphone, href: "/ads", color: "oklch(0.6 0.22 25)" },
+  { key: "audit", label: "Site Audit", icon: ShieldCheck, href: "/audit", color: "oklch(0.68 0.15 200)" },
   { key: "scheduler", label: "Scheduler", icon: Settings, href: "/scheduler", color: "oklch(0.55 0.01 265)" },
 ];
 
@@ -82,7 +85,7 @@ export default function Dashboard() {
             />
             <StatCard
               label="Active Modules"
-              value={`${data?.activeModules ?? 0}/${data?.totalModules ?? 5}`}
+              value={`${data?.activeModules ?? 0}/${data?.totalModules ?? 9}`}
               icon={<Zap className="w-4 h-4" />}
               status="info"
               color="oklch(0.82 0.12 85)"
