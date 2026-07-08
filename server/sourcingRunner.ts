@@ -2,15 +2,15 @@
  * Shared product-sourcing logic — used by both the manual `runScrape` tRPC
  * mutation and the autonomous `/api/scheduled/product-sourcing` route.
  *
- * CJ Dropshipping has a real, accessible product-search API, so when it's
- * connected this pulls real listings. DSers and AliExpress don't offer one
- * to regular sellers (DSers is invite-only; AliExpress requires an approved
- * affiliate partnership), so for those — and for CJ when it isn't connected
- * — this falls back to AI-generated candidate ideas, explicitly marked
- * `isVerified: false` rather than presented as a live product feed.
+ * CJ Dropshipping has a real product-search API. When connected this pulls
+ * real listings via a 2-step auth (email+apiKey → accessToken). DSers and
+ * AliExpress don't offer a product search API to regular sellers, so for
+ * those — and for CJ when it isn't connected — this falls back to
+ * AI-generated candidate ideas, explicitly marked isVerified:false so the
+ * fulfillment engine never tries to place a real CJ order against one.
  */
 import { invokeLLM } from "./_core/llm";
-import { searchCjProducts } from "./_core/cjDropshipping";
+import { searchCjProducts, getCjAccessToken } from "./_core/cjDropshipping";
 import { decryptCredentials } from "./crypto";
 import { sleep } from "./rateLimiter";
 import {
@@ -33,7 +33,16 @@ export async function runSourcingScrape(specId: number): Promise<{ count: number
 
     if (sources.includes("cj")) {
       const cjCred = await getSourcingAppCredential("cj");
-      const cjToken = cjCred?.accessToken ? decryptCredentials({ accessToken: cjCred.accessToken }).accessToken : null;
+      // apiKey column holds the CJ API key; apiSecret holds the account email
+      const rawApiKey = cjCred?.apiKey ? decryptCredentials({ apiKey: cjCred.apiKey }).apiKey : null;
+      const cjEmail = cjCred?.apiSecret ?? null;
+
+      let cjToken: string | null = null;
+      if (rawApiKey && cjEmail) {
+        cjToken = await getCjAccessToken(cjEmail, rawApiKey);
+        if (!cjToken) console.warn("[Sourcing] CJ auth failed — falling back to AI for CJ source");
+      }
+
       if (cjToken) {
         for (const keyword of keywords.slice(0, 5)) {
           try {
@@ -63,9 +72,11 @@ export async function runSourcingScrape(specId: number): Promise<{ count: number
       }
     }
 
-    const needsAiFallback = sources.some(s => s === "dsers" || s === "aliexpress") || (sources.includes("cj") && !products.some(p => p.source === "cj"));
-    if (needsAiFallback) {
-      const aiSources = sources.filter(s => s !== "cj" || !products.some(p => p.source === "cj"));
+    const cjReturnedResults = products.some(p => p.source === "cj");
+    // AI fallback covers dsers/aliexpress always, and cj only when CJ
+    // returned nothing (no token, or genuinely no matches).
+    const aiSources = sources.filter(s => s !== "cj" || !cjReturnedResults);
+    if (aiSources.length > 0) {
       const sourceLabels: Record<string, string> = {
         dsers: "DSers (AliExpress dropshipping products)",
         cj: "CJ Dropshipping",
@@ -126,12 +137,16 @@ export async function runSourcingScrape(specId: number): Promise<{ count: number
       });
       const scrapeRaw = response.choices[0]?.message?.content;
       const parsed = JSON.parse(typeof scrapeRaw === "string" ? scrapeRaw : "{}");
-      const aiProducts = (parsed.products || []).map((p: any) => ({
-        ...p,
-        specId,
-        isVerified: false,
-        aiScoreReason: `AI-generated idea, not live inventory: ${p.aiScoreReason}`,
-      }));
+      const aiProducts = (parsed.products || [])
+        // Never let the AI emit a "cj" product when CJ already returned real
+        // results — a fabricated cj externalId would fail at fulfillment time.
+        .filter((p: any) => !(p.source === "cj" && cjReturnedResults))
+        .map((p: any) => ({
+          ...p,
+          specId,
+          isVerified: false,
+          aiScoreReason: `AI-generated idea, not live inventory: ${p.aiScoreReason}`,
+        }));
       products.push(...aiProducts);
     }
 
