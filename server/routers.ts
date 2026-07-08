@@ -2245,24 +2245,32 @@ const integrationsRouter = router({
             break;
           }
           case "autods": {
-            // AutoDS API key validation
+            // AutoDS has no lightweight public key-validation endpoint we can
+            // call here, so this only sanity-checks the key length — it does
+            // not confirm the key actually works.
             valid = credentials.apiKey.length > 10;
             if (!valid) errorMsg = "AutoDS API key too short — get it from AutoDS → Settings → API";
             break;
           }
           case "cj_dropshipping": {
-            // CJ access token validation
-            const res = await fetch("https://developers.cjdropshipping.com/api2.0/v1/authentication/getAccessToken", {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ email: "", password: "", refreshToken: credentials.apiKey }),
-            });
-            valid = credentials.apiKey.length > 10;
-            if (!valid) errorMsg = "CJ token too short — get it from CJ Developer Portal → My Apps";
+            // Real CJ auth: apiKey is the CJ API key, apiSecret is the CJ
+            // account email. Actually exchange them for an access token and
+            // trust the result (previously it made a call then ignored it).
+            const cjEmail = credentials.apiSecret;
+            if (!cjEmail) {
+              valid = false;
+              errorMsg = "Enter your CJ account email in the secondary field along with the API key.";
+              break;
+            }
+            const { getCjAccessToken } = await import("./_core/cjDropshipping");
+            const cjToken = await getCjAccessToken(cjEmail, credentials.apiKey);
+            valid = !!cjToken;
+            if (!valid) errorMsg = "CJ credentials rejected — check the email and API key from CJ Developer Portal → My Apps.";
             break;
           }
           case "dsers": {
-            // DSers API key validation
+            // DSers exposes no public key-validation endpoint, so this only
+            // sanity-checks the key length — it does not confirm the key works.
             valid = credentials.apiKey.length > 10;
             if (!valid) errorMsg = "DSers API key too short — get it from DSers → Settings → API Access";
             break;
