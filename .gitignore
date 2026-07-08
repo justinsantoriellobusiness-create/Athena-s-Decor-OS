@@ -112,3 +112,9 @@ temp/
 # Manus version file (auto-generated, not part of source)
 client/public/__manus__/version.json
 .project-config.json
+
+# Local Claude Code settings (not source)
+.claude/
+
+# npm lockfile — this repo uses pnpm-lock.yaml
+package-lock.json
