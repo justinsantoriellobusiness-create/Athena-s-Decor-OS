@@ -1,6 +1,6 @@
 import { trpc } from "@/lib/trpc";
 import { toast } from "sonner";
-import { Settings, Loader2, Search, FileText, Package, BarChart3, Megaphone, ShoppingBag, Clock, ToggleLeft, ToggleRight, Calendar } from "lucide-react";
+import { Settings, Loader2, Search, FileText, Package, BarChart3, Megaphone, ShoppingBag, Clock, ToggleLeft, ToggleRight, Calendar, Truck, DollarSign, ShieldCheck, Zap } from "lucide-react";
 import { Switch } from "@/components/ui/switch";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -13,9 +13,18 @@ const moduleInfo: Record<string, { label: string; description: string; icon: any
   inventory: { label: "Inventory Sync", description: "Monitor supplier stock, auto-update Shopify", icon: BarChart3, color: "oklch(0.82 0.12 85)" },
   ads: { label: "Ad Optimization", description: "Auto-optimize budgets and refresh creatives", icon: Megaphone, color: "oklch(0.6 0.22 25)" },
   shopify: { label: "Shopify Sync", description: "Periodic product catalog synchronization", icon: ShoppingBag, color: "oklch(0.65 0.18 145)" },
+  fulfillment: { label: "Order Fulfillment", description: "Auto-place paid orders with CJ/DSers, sync tracking back to Shopify", icon: Truck, color: "oklch(0.7 0.17 160)" },
+  accounting: { label: "Accounting Sync", description: "Import transactions from Shopify, PayPal, eBay into P&L", icon: DollarSign, color: "oklch(0.72 0.16 145)" },
+  audit: { label: "Site Audit", description: "Scan for SEO/CRO issues across store pages", icon: ShieldCheck, color: "oklch(0.68 0.15 200)" },
 };
 
+// Fallback so a seeded module without an entry still renders instead of vanishing.
+function getModuleInfo(module: string) {
+  return moduleInfo[module] ?? { label: module, description: "Automation module", icon: Zap, color: "oklch(0.55 0.01 265)" };
+}
+
 const cronPresets = [
+  { label: "Every 30 minutes", value: "*/30 * * * *" },
   { label: "Every hour", value: "0 * * * *" },
   { label: "Every 6 hours", value: "0 */6 * * *" },
   { label: "Daily at 9am", value: "0 9 * * *" },
@@ -35,7 +44,7 @@ export default function SchedulerPage() {
 
   const handleToggle = (module: string, enabled: boolean) => {
     updateMutation.mutate({ module, enabled });
-    toast.success(`${moduleInfo[module]?.label || module} ${enabled ? "enabled" : "disabled"}`);
+    toast.success(`${getModuleInfo(module).label} ${enabled ? "enabled" : "disabled"}`);
   };
 
   const handleCronChange = (module: string, cronExpression: string) => {
@@ -87,8 +96,7 @@ export default function SchedulerPage() {
           Array(5).fill(0).map((_, i) => <Skeleton key={i} className="h-28 rounded-xl" />)
         ) : settings?.length ? (
           settings.map((setting: any) => {
-            const info = moduleInfo[setting.module];
-            if (!info) return null;
+            const info = getModuleInfo(setting.module);
             const Icon = info.icon;
 
             return (
@@ -152,6 +160,9 @@ export default function SchedulerPage() {
                         </div>
                       )}
                     </div>
+                    {setting.lastRunMessage && (
+                      <p className="text-[11px] text-muted-foreground/70 mt-2 font-mono">{setting.lastRunMessage}</p>
+                    )}
                   </div>
                 </div>
               </div>
