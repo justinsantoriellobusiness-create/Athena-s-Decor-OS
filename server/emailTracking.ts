@@ -1,12 +1,11 @@
 /**
  * Real open/click/unsubscribe tracking for outbound email campaigns.
  * These are plain Express GET routes (not tRPC) because tracking pixels
- * and links embedded in an email need a simple fetchable URL — an email
- * client's <img> tag or a clicked <a href> can't carry tRPC's batch-link
- * envelope.
+ * and links embedded in an email need a simple fetchable URL.
  */
 import type { Express, Request, Response } from "express";
 import { getEmailCampaign, getEmailProspects, insertEmailEvent, updateEmailProspect } from "./db";
+import { ENV } from "./_core/env";
 
 // 1x1 transparent GIF, used as the open-tracking pixel.
 const TRACKING_PIXEL = Buffer.from(
@@ -29,8 +28,26 @@ function parseIds(req: Request): { campaignId: number; prospectId: number; userI
   return { campaignId, prospectId, userId };
 }
 
+// Only redirect to destinations we control (this app's own public origin)
+// or, if publicBaseUrl isn't set, refuse and send to root. This closes the
+// open-redirect: an attacker can't use the store's domain to bounce victims
+// to an arbitrary phishing site via the ?u= parameter.
+function safeRedirectTarget(target: string): string {
+  if (!/^https?:\/\//i.test(target)) return "/";
+  try {
+    const dest = new URL(target);
+    if (ENV.publicBaseUrl) {
+      const base = new URL(ENV.publicBaseUrl);
+      if (dest.host === base.host) return dest.toString();
+    }
+    return "/";
+  } catch {
+    return "/";
+  }
+}
+
 export function registerEmailTrackingRoutes(app: Express) {
-  // Open tracking — embedded as <img src="..."> in the sent email.
+  // Open tracking
   app.get("/api/email/o/:campaignId/:prospectId/:userId", async (req: Request, res: Response) => {
     res.set("Content-Type", "image/gif");
     res.set("Cache-Control", "no-store");
@@ -49,11 +66,10 @@ export function registerEmailTrackingRoutes(app: Express) {
     res.send(TRACKING_PIXEL);
   });
 
-  // Click tracking — every link in the sent email is rewritten to point
-  // here first, with the real destination in ?u=, then redirects there.
+  // Click tracking
   app.get("/api/email/c/:campaignId/:prospectId/:userId", async (req: Request, res: Response) => {
-    const target = typeof req.query.u === "string" ? req.query.u : "/";
-    const safeTarget = /^https?:\/\//i.test(target) ? target : "/";
+    const rawTarget = typeof req.query.u === "string" ? req.query.u : "/";
+    const safeTarget = safeRedirectTarget(rawTarget);
     const ids = parseIds(req);
     if (ids && (await verifyOwnership(ids.campaignId, ids.prospectId, ids.userId))) {
       await insertEmailEvent({
@@ -69,7 +85,7 @@ export function registerEmailTrackingRoutes(app: Express) {
     res.redirect(302, safeTarget);
   });
 
-  // One-click unsubscribe — required for real bulk sending (CAN-SPAM).
+  // One-click unsubscribe (CAN-SPAM)
   app.get("/api/email/u/:campaignId/:prospectId/:userId", async (req: Request, res: Response) => {
     const ids = parseIds(req);
     if (ids && (await verifyOwnership(ids.campaignId, ids.prospectId, ids.userId))) {
@@ -96,7 +112,7 @@ export function registerEmailTrackingRoutes(app: Express) {
  * Rewrites a campaign's HTML body for a specific recipient: appends an
  * open-tracking pixel, rewrites every http(s) link to route through the
  * click tracker, and appends an unsubscribe footer if the template didn't
- * already put one in.
+ * already include one.
  */
 export function instrumentEmailHtml(
   html: string,
