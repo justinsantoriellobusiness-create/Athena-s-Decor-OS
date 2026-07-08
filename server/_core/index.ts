@@ -75,6 +75,11 @@ async function startServer() {
     createExpressMiddleware({
       router: appRouter,
       createContext,
+      onError({ error, type, path }) {
+        // Full error (message + stack) stays server-side; the client only
+        // receives the masked shape from errorFormatter.
+        console.error(`[tRPC] ${type} ${path ?? "<router>"} failed:`, error);
+      },
     })
   );
   // development mode uses Vite, production mode uses static files

@@ -5,6 +5,23 @@ import type { TrpcContext } from "./context";
 
 const t = initTRPC.context<TrpcContext>().create({
   transformer: superjson,
+  errorFormatter({ shape, error }) {
+    // Intentional TRPCErrors carry user-facing messages; INTERNAL_SERVER_ERROR
+    // wraps unexpected throws (DB/third-party API failures) whose raw messages
+    // and stacks must not reach the client.
+    if (error.code === "INTERNAL_SERVER_ERROR") {
+      return {
+        ...shape,
+        message: "Something went wrong. Please try again.",
+        data: {
+          code: shape.data.code,
+          httpStatus: shape.data.httpStatus,
+          path: shape.data.path,
+        },
+      };
+    }
+    return shape;
+  },
 });
 
 export const router = t.router;
