@@ -1,6 +1,7 @@
 import { createBlogPost, updateBlogPost, getShopifyConfig } from "./db";
 import { getShopifyClient } from "./shopify";
 import { decryptCredential } from "./crypto";
+import { notifyOwner } from "./_core/notification";
 
 type GeneratedPost = {
   title: string;
@@ -70,8 +71,19 @@ export async function createAndPublishBlogPost(
         });
         return { postId, published: true };
       }
+      // Connected but no blog found — surface it instead of silently drafting.
+      await notifyOwner({
+        title: "Blog auto-publish skipped: no Shopify blog found",
+        content: `"${post.title}" was saved as a draft because your Shopify store has no blog to publish to. Create a blog in Shopify (Online Store → Blog posts) to enable auto-publishing.`,
+      }).catch(() => {});
     } catch (err: any) {
+      // Publish was requested but failed — the post is stranded as a draft.
+      // Tell the owner rather than reporting success upstream.
       console.warn("[Blog] Autonomous Shopify publish failed:", err.message);
+      await notifyOwner({
+        title: "Blog auto-publish failed",
+        content: `"${post.title}" was generated but could not be published to Shopify (${err.message}). It's saved as a draft — review it under Blog.`,
+      }).catch(() => {});
     }
   }
 
