@@ -149,6 +149,7 @@ export default function AutomationHubPage() {
 
   const [runningModules, setRunningModules] = useState<Set<ModuleId>>(new Set());
   const [runResults, setRunResults] = useState<Record<string, string>>({});
+  const [enablingAll, setEnablingAll] = useState(false);
 
   const getConfig = (moduleId: ModuleId) =>
     configs?.find((c) => c.module === moduleId);
@@ -170,6 +171,22 @@ export default function AutomationHubPage() {
       enabled: existing?.enabled ?? false,
       frequencyHours: hours,
     });
+  };
+
+  const handleEnableAll = async () => {
+    setEnablingAll(true);
+    const targets = MODULES.filter(m => !getConfig(m.id)?.enabled);
+    const outcomes = await Promise.allSettled(
+      targets.map(m => upsertConfig.mutateAsync({ module: m.id, enabled: true, frequencyHours: m.defaultFreq }))
+    );
+    const failed = outcomes.filter(o => o.status === "rejected").length;
+    refetch();
+    setEnablingAll(false);
+    if (failed === 0) {
+      toast.success(targets.length ? `Enabled ${targets.length} automation(s)` : "All automations already enabled");
+    } else {
+      toast.error(`${targets.length - failed} enabled, ${failed} failed — check and retry the ones still off`);
+    }
   };
 
   const handleRunNow = async (moduleId: ModuleId) => {
@@ -216,17 +233,10 @@ export default function AutomationHubPage() {
           <Button
             variant="outline"
             size="sm"
-            onClick={() => {
-              MODULES.forEach(m => {
-                const existing = getConfig(m.id);
-                if (!existing?.enabled) {
-                  upsertConfig.mutate({ module: m.id, enabled: true, frequencyHours: m.defaultFreq });
-                }
-              });
-              toast.success("All automations enabled");
-            }}
+            onClick={handleEnableAll}
+            disabled={enablingAll}
           >
-            <Zap className="w-4 h-4 mr-1" />
+            {enablingAll ? <RefreshCw className="w-4 h-4 mr-1 animate-spin" /> : <Zap className="w-4 h-4 mr-1" />}
             Enable All
           </Button>
         </div>
