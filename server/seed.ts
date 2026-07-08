@@ -13,6 +13,8 @@ const DEFAULT_MODULES = [
   { module: "shopify", enabled: true, cronExpression: "0 */6 * * *" },
   { module: "accounting", enabled: true, cronExpression: "0 0 * * *" },
   { module: "audit", enabled: false, cronExpression: "0 3 * * 0" },
+  // Auto-fulfillment: paid Shopify orders → CJ/DSers → tracking sync
+  { module: "fulfillment", enabled: true, cronExpression: "*/30 * * * *" },
 ];
 
 export async function seedDefaultSettings() {
@@ -89,18 +91,15 @@ export async function seedIntegrationsFromEnv() {
     // Users table may not exist yet on very first migration boot
   }
 
-  // ── Shopify ──────────────────────────────────────────────────────────────────
+  // ── Shopify ──────────────────────────────────────────────────────────────
   const shopifyDomain = process.env.SHOPIFY_STORE_DOMAIN;
   const shopifyClientId = process.env.SHOPIFY_CLIENT_ID;
   const shopifyClientSecret = process.env.SHOPIFY_CLIENT_SECRET;
-  // Fall back to static token if no client credentials provided
   const shopifyStaticToken = process.env.SHOPIFY_ACCESS_TOKEN;
 
   if (shopifyDomain && (shopifyClientId || shopifyStaticToken)) {
     try {
       let shopifyToken = shopifyStaticToken ?? null;
-
-      // Prefer OAuth client credentials — auto-refreshes on every boot
       if (shopifyClientId && shopifyClientSecret) {
         const freshToken = await fetchShopifyAccessToken(shopifyDomain, shopifyClientId, shopifyClientSecret);
         if (freshToken) {
@@ -116,7 +115,6 @@ export async function seedIntegrationsFromEnv() {
       } else {
         const { getShopifyClient } = await import("./shopify");
         const client = await getShopifyClient(shopifyDomain, shopifyToken);
-
         let productCount = 0;
         try {
           const countData = await client.getProductCount();
@@ -124,9 +122,7 @@ export async function seedIntegrationsFromEnv() {
         } catch (countErr) {
           console.warn("[Seed] Shopify product count failed:", countErr);
         }
-
         const encryptedToken = encryptCredential(shopifyToken);
-
         await upsertShopifyConfig({
           storeDomain: shopifyDomain,
           accessToken: encryptedToken,
@@ -134,7 +130,6 @@ export async function seedIntegrationsFromEnv() {
           lastSyncAt: new Date(),
           productCount,
         });
-
         if (adminUserId !== null) {
           await upsertIntegrationToken(adminUserId, "shopify", {
             accessToken: encryptedToken,
@@ -143,7 +138,6 @@ export async function seedIntegrationsFromEnv() {
             connectedAt: new Date(),
           });
         }
-
         console.log(`[Seed] Shopify connected: ${shopifyDomain} (${productCount} products)`);
       }
     } catch (err) {
@@ -151,7 +145,7 @@ export async function seedIntegrationsFromEnv() {
     }
   }
 
-  // ── CJ Dropshipping ──────────────────────────────────────────────────────────
+  // ── CJ Dropshipping ──────────────────────────────────────────────────
   const cjApiKey = process.env.CJ_API_KEY;
   const cjEmail = process.env.CJ_EMAIL;
   if (cjApiKey && cjEmail) {
@@ -176,7 +170,7 @@ export async function seedIntegrationsFromEnv() {
     }
   }
 
-  // ── DSers ─────────────────────────────────────────────────────────────────────
+  // ── DSers ──────────────────────────────────────────────────────────────
   const dsersEmail = process.env.DSERS_EMAIL;
   const dsersPassword = process.env.DSERS_PASSWORD;
   if (dsersEmail && dsersPassword) {

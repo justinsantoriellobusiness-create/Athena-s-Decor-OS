@@ -11,6 +11,7 @@ import { sendEmail, isEmailConfigured } from "./_core/email";
 import { instrumentEmailHtml } from "./emailTracking";
 import { runFullAudit } from "./auditRunner";
 import { runSourcingScrape } from "./sourcingRunner";
+import { runAutoFulfillment } from "./fulfillmentRunner";
 import { optimizeActiveCampaignBudgets } from "./adsRunner";
 import { storagePut } from "./storage";
 import { sleep } from "./rateLimiter";
@@ -116,6 +117,7 @@ export function registerScheduledRoutes(app: Router) {
     try {
       const topics = ["home decor trends", "minimalist living room ideas", "cozy bedroom decor", "kitchen styling tips", "wall art inspiration"];
       const topic = topics[Math.floor(Math.random() * topics.length)];
+      const autoPublish = ((setting.config as any)?.autoPublish) === true;
 
       const contentResponse = await invokeLLM({
         messages: [
@@ -129,6 +131,7 @@ export function registerScheduledRoutes(app: Router) {
       const postData = JSON.parse(typeof raw === "string" ? raw : "{}");
 
       let featuredImageUrl: string | undefined;
+      let imageWarning = "";
       try {
         const img = await generateImage({ prompt: `${postData.imagePrompt}, elegant home decor photography, soft natural lighting` });
         if (img.url) {
@@ -137,13 +140,23 @@ export function registerScheduledRoutes(app: Router) {
           const stored = await storagePut(`blog-images/${Date.now()}-auto.jpg`, buf, "image/jpeg");
           featuredImageUrl = stored.url;
         }
-      } catch {}
+      } catch (imgErr: any) {
+        imageWarning = ` (image generation failed: ${imgErr?.message ?? "unknown"})`;
+      }
 
-      await createBlogPost({ ...postData, featuredImageUrl, status: "draft", generatedByAi: true });
-      await updateAutomationSetting("blog", { lastRunAt: new Date(), lastRunStatus: "success" });
+      // Use the shared publish helper so the legacy and autonomous blog
+      // paths behave identically; autoPublish defaults off for the legacy
+      // weekly module (draft for review) unless config opts in.
+      await createAndPublishBlogPost({
+        title: postData.title, slug: postData.slug, content: postData.content,
+        excerpt: postData.excerpt, seoTitle: postData.seoTitle,
+        seoDescription: postData.seoDescription, tags: postData.tags,
+        featuredImageUrl, featuredImageAlt: featuredImageUrl ? `${postData.title} - Home Decor` : undefined,
+      }, autoPublish);
+      await updateAutomationSetting("blog", { lastRunAt: new Date(), lastRunStatus: "success", lastRunMessage: `${autoPublish ? "published" : "drafted"}: ${postData.title}${imageWarning}` });
       res.json({ success: true });
     } catch (err: any) {
-      await updateAutomationSetting("blog", { lastRunAt: new Date(), lastRunStatus: "error" });
+      await updateAutomationSetting("blog", { lastRunAt: new Date(), lastRunStatus: "error", lastRunMessage: err.message });
       res.status(500).json({ error: err.message });
     }
   });
@@ -158,15 +171,12 @@ export function registerScheduledRoutes(app: Router) {
       if (!config?.isConnected) return res.json({ skipped: true, reason: "Shopify not connected" });
 
       const client = await getShopifyClient(config.storeDomain, decryptCredential(config.accessToken) ?? config.accessToken);
-      const productsData = await client.getProducts(50);
+      const products = await client.getAllProducts();
 
       let outOfStockCount = 0;
-      for (const product of productsData.products) {
+      let draftFailures = 0;
+      for (const product of products) {
         for (const variant of product.variants) {
-          // No generic cross-supplier stock API is available at this scan
-          // point (would need each product mapped to its specific
-          // AutoDS/CJ/DSers listing) — Shopify's own tracked stock is the
-          // only real number available here.
           const shopifyStock = variant.inventory_quantity;
           const status = shopifyStock === 0 ? "out_of_stock" : shopifyStock < 10 ? "low_stock" : "in_stock";
           await upsertInventorySnapshot({
@@ -182,23 +192,47 @@ export function registerScheduledRoutes(app: Router) {
           });
           if (status === "out_of_stock") {
             outOfStockCount++;
-            try { await client.updateProduct(String(product.id), { status: "draft" }); } catch {}
+            try {
+              await client.updateProduct(String(product.id), { status: "draft" });
+            } catch (draftErr) {
+              draftFailures++;
+              console.warn(`[Inventory] Failed to draft out-of-stock product ${product.id}:`, draftErr);
+            }
           }
         }
       }
 
-      await updateAutomationSetting("inventory", { lastRunAt: new Date(), lastRunStatus: "success" });
-      res.json({ success: true, outOfStockCount });
+      if (draftFailures > 0) {
+        await notifyOwner({
+          title: `Inventory: ${draftFailures} out-of-stock product(s) could not be hidden`,
+          content: `${draftFailures} product(s) are out of stock but failed to auto-draft in Shopify and may still be purchasable. Review them in Inventory.`,
+        }).catch(() => {});
+      }
+
+      await updateAutomationSetting("inventory", { lastRunAt: new Date(), lastRunStatus: "success", lastRunMessage: `scanned=${products.length} outOfStock=${outOfStockCount}${draftFailures ? ` draftFails=${draftFailures}` : ""}` });
+      res.json({ success: true, outOfStockCount, scanned: products.length });
     } catch (err: any) {
-      await updateAutomationSetting("inventory", { lastRunAt: new Date(), lastRunStatus: "error" });
+      await updateAutomationSetting("inventory", { lastRunAt: new Date(), lastRunStatus: "error", lastRunMessage: err.message });
       res.status(500).json({ error: err.message });
     }
   });
 
-  // Ads automation: re-run AI budget optimization for every active campaign
-  // with performance data. Does NOT push spend changes to any ad platform —
-  // no ad platform posting is wired up (see PROJECT_HANDOFF_CLAUDE.md) — this
-  // only updates the recommended budget stored in our own database.
+  // ─── Autonomous Fulfillment: Shopify paid orders → CJ/DSers → tracking sync
+  // The runner acquires its own DB run-lock, so this route just invokes it.
+  app.post("/api/scheduled/fulfillment", cronAuth, async (req, res) => {
+    const setting = (await getAllAutomationSettings()).find(s => s.module === "fulfillment");
+    if (!setting?.enabled) return res.json({ skipped: true });
+    try {
+      const result = await runAutoFulfillment();
+      if (result.lockedOut) return res.json({ skipped: true, reason: "another fulfillment run in progress" });
+      res.json({ success: true, ...result });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // Ads automation: AI budget recommendations only — does NOT push spend
+  // changes to any ad platform (see adsRunner.ts).
   app.post("/api/scheduled/ads", cronAuth, async (req, res) => {
     const setting = (await getAllAutomationSettings()).find(s => s.module === "ads");
     if (!setting?.enabled) return res.json({ skipped: true });
@@ -212,8 +246,11 @@ export function registerScheduledRoutes(app: Router) {
     }
   });
 
-  // ─── Accounting: Daily auto-sync all connected accounts ────────────────────
+  // ─── Accounting: Daily auto-sync all connected accounts ──────────────────
   app.post("/api/scheduled/accounting", cronAuth, async (req, res) => {
+    // Respect the enabled toggle like every other module.
+    const setting = (await getAllAutomationSettings()).find(s => s.module === "accounting");
+    if (!setting?.enabled) return res.json({ skipped: true });
     try {
       const accounts = await getFinancialAccounts();
       const activeAccounts = accounts.filter((a: any) => a.isActive && a.isConnected);
@@ -328,13 +365,15 @@ export function registerScheduledRoutes(app: Router) {
         await notifyOwner({ title: `Accounting: ${totalFlagged} potential duplicate(s) flagged`, content: `${totalFlagged} transactions were flagged as possible cross-platform duplicates and excluded from P&L. Review them in Accounting → Transactions.` }).catch(() => {});
       }
 
+      await updateAutomationSetting("accounting", { lastRunAt: new Date(), lastRunStatus: errors.length && !totalImported ? "error" : "success", lastRunMessage: `imported=${totalImported} flagged=${totalFlagged}${errors.length ? ` errors=${errors.length}` : ""}` });
       res.json({ success: true, accounts: results, totalImported, totalFlagged });
     } catch (err: any) {
+      await updateAutomationSetting("accounting", { lastRunAt: new Date(), lastRunStatus: "error", lastRunMessage: err.message });
       res.status(500).json({ error: err.message });
     }
   });
 
-  // ─── Autonomous: Email Scraper ────────────────────────────────────────────────
+  // ─── Autonomous: Email Scraper ────────────────────────────────────────
   app.post("/api/scheduled/email-scraper", cronAuth, async (req, res) => {
     try {
       const allConfigs = await getAllAutonomousConfigsAll();
@@ -367,18 +406,22 @@ export function registerScheduledRoutes(app: Router) {
     }
   });
 
-  // ─── Autonomous: Email Campaigns ──────────────────────────────────────────────
+  // ─── Autonomous: Email Campaigns ──────────────────────────────────────
   app.post("/api/scheduled/email-campaigns", cronAuth, async (req, res) => {
     try {
+      // Sending bulk marketing mail requires a working unsubscribe link,
+      // which instrumentEmailHtml only injects when publicBaseUrl is set.
+      if (!ENV.publicBaseUrl) {
+        return res.status(400).json({ error: "PUBLIC_BASE_URL / RAILWAY_PUBLIC_DOMAIN not set — refusing to send without an unsubscribe link (CAN-SPAM)." });
+      }
       const allConfigs = await getAllAutonomousConfigsAll();
       const configs = allConfigs.filter((c: any) => c.module === "email_campaigns" && c.enabled && isAutonomousConfigDue(c));
       let totalSent = 0;
       for (const config of configs) {
         const moduleConfig = (config.config as any) || {};
         const prospects = await getEmailProspects(config.userId);
-        // Exclude "competitor_scrape" prospects — those are AI-generated
-        // plausible-sounding profiles, not real scraped people, so their
-        // addresses aren't real and shouldn't receive actual sends.
+        // Exclude "competitor_scrape" prospects — AI-generated personas, not
+        // real people; their addresses aren't real and must never be emailed.
         const newProspects = prospects.filter((p: any) => !p.lastContactedAt && p.status === "active" && p.source !== "competitor_scrape").slice(0, moduleConfig.batchSize || 100);
         if (newProspects.length === 0) continue;
         const campaignType = moduleConfig.campaignType || "promotional";
@@ -388,9 +431,7 @@ export function registerScheduledRoutes(app: Router) {
         const campaign = await createEmailCampaign({ userId: config.userId, name: `Auto Campaign ${new Date().toLocaleDateString()}`, ...emailContent, type: campaignType as any, status: "sent", sentAt: new Date(), automationEnabled: false, frequencyDays: 30, totalSent: 0, totalDelivered: 0, totalOpened: 0, totalClicked: 0, totalBounced: 0, totalUnsubscribed: 0 });
         let batchDelivered = 0;
         for (const prospect of newProspects) {
-          const html = emailContent.bodyHtml && ENV.publicBaseUrl
-            ? instrumentEmailHtml(emailContent.bodyHtml, ENV.publicBaseUrl, { campaignId: campaign.id, prospectId: prospect.id, userId: config.userId })
-            : emailContent.bodyHtml;
+          const html = instrumentEmailHtml(emailContent.bodyHtml, ENV.publicBaseUrl, { campaignId: campaign.id, prospectId: prospect.id, userId: config.userId });
           const sendResult = isEmailConfigured()
             ? await sendEmail({ to: prospect.email, subject: emailContent.subject, html, text: emailContent.bodyText })
             : { success: false as const, error: "RESEND_API_KEY not configured" };
@@ -413,7 +454,7 @@ export function registerScheduledRoutes(app: Router) {
     }
   });
 
-  // ─── Autonomous: Backlinker ───────────────────────────────────────────────────
+  // ─── Autonomous: Backlinker ───────────────────────────────────────────
   app.post("/api/scheduled/backlinker", cronAuth, async (req, res) => {
     try {
       const allConfigs = await getAllAutonomousConfigsAll();
@@ -430,10 +471,6 @@ export function registerScheduledRoutes(app: Router) {
         const response = await invokeLLM({ messages: [{ role: "user", content: prompt }], response_format: { type: "json_schema", json_schema: { name: "sites", strict: true, schema: { type: "object", properties: { sites: { type: "array", items: { type: "object", properties: { siteName: { type: "string" }, siteUrl: { type: "string" }, pageUrl: { type: "string" }, pageTitle: { type: "string" }, type: { type: "string" }, domainAuthority: { type: "number" }, relevanceScore: { type: "number" }, seoValue: { type: "string" }, outreachEmail: { type: "string" }, outreachMessage: { type: "string" }, whyBest: { type: "string" } }, required: ["siteName","siteUrl","pageUrl","pageTitle","type","domainAuthority","relevanceScore","seoValue","outreachEmail","outreachMessage","whyBest"], additionalProperties: false } } }, required: ["sites"], additionalProperties: false } } } });
         const raw = response.choices[0].message.content;
         const parsed = JSON.parse(typeof raw === "string" ? raw : JSON.stringify(raw));
-        // AI-suggested targets, not a verified crawl — never store a
-        // fabricated contact email as if it were real (matches the fix in
-        // discoverOpportunities/discoverBestSites). Also fixes status
-        // ("discovered" isn't a valid enum value — insert would fail).
         const opportunities = (parsed.sites || []).map((s: any) => ({ ...s, campaignId: activeCampaign.id, userId: config.userId, status: "new" as const, outreachEmail: null, notes: `AI-suggested target, not verified — confirm it's real before reaching out. ${s.whyBest ?? ""}`.trim() }));
         if (opportunities.length > 0) await insertBacklinkOpportunities(opportunities);
         await upsertAutonomousConfig(config.userId, "backlinker", { lastAutoRunAt: new Date(), nextAutoRunAt: new Date(Date.now() + config.frequencyHours * 3600000) });
@@ -445,7 +482,7 @@ export function registerScheduledRoutes(app: Router) {
     }
   });
 
-  // ─── Autonomous: Site Audit ───────────────────────────────────────────────────
+  // ─── Autonomous: Site Audit ────────────────────────────────────────
   app.post("/api/scheduled/site-audit", cronAuth, async (req, res) => {
     try {
       const allConfigs = await getAllAutonomousConfigsAll();
@@ -466,7 +503,7 @@ export function registerScheduledRoutes(app: Router) {
     }
   });
 
-  // ─── Autonomous: Product Sourcing ─────────────────────────────────────────────
+  // ─── Autonomous: Product Sourcing ─────────────────────────────────────
   app.post("/api/scheduled/product-sourcing", cronAuth, async (req, res) => {
     try {
       const allConfigs = await getAllAutonomousConfigsAll();
@@ -481,6 +518,7 @@ export function registerScheduledRoutes(app: Router) {
           } catch (err: any) {
             console.warn(`[AutoSourcing] Scrape failed for spec ${spec.id}:`, err.message);
           }
+          await sleep(500);
         }
         await upsertAutonomousConfig(config.userId, "product_sourcing", { lastAutoRunAt: new Date(), nextAutoRunAt: new Date(Date.now() + config.frequencyHours * 3600000) });
       }
@@ -490,7 +528,7 @@ export function registerScheduledRoutes(app: Router) {
     }
   });
 
-  // ─── Autonomous: Blog ─────────────────────────────────────────────────────────
+  // ─── Autonomous: Blog ──────────────────────────────────────────────
   app.post("/api/scheduled/blog-autonomous", cronAuth, async (req, res) => {
     try {
       const allConfigs = await getAllAutonomousConfigsAll();
