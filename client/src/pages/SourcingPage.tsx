@@ -24,6 +24,12 @@ function SourceBadge({ source }: { source: string }) {
   return <Badge className="bg-amber-500/10 text-amber-400 border-amber-500/20 text-[10px]">CJ Drop</Badge>;
 }
 
+function VerifiedBadge({ isVerified }: { isVerified: boolean }) {
+  return isVerified
+    ? <Badge className="bg-emerald-500/10 text-emerald-400 border-emerald-500/20 text-[10px]" title="Real, live supplier listing — safe to auto-import and auto-fulfill">✓ Verified</Badge>
+    : <Badge className="bg-white/10 text-white/50 border-white/10 text-[10px]" title="AI-generated idea, not a live listing — review before importing; can't auto-fulfill">AI idea</Badge>;
+}
+
 function ScoreBadge({ score }: { score: number }) {
   const color = score >= 8 ? "text-emerald-400 bg-emerald-500/10 border-emerald-500/20"
     : score >= 6 ? "text-yellow-400 bg-yellow-500/10 border-yellow-500/20"
@@ -152,6 +158,15 @@ export default function SourcingPage() {
             <Plus className="w-4 h-4 mr-2" />New Sourcing Spec
           </Button>
         </div>
+      </div>
+
+      <div className="bg-violet-500/5 border border-violet-500/10 rounded-lg px-4 py-3 text-xs text-white/50">
+        <strong className="text-white/70">How this works:</strong> Create a spec below (keywords + price/rating filters) →
+        click <strong className="text-white/70">Run Scrape</strong> → review results, each tagged{" "}
+        <VerifiedBadge isVerified={true} /> (a real CJ Dropshipping listing — safe to import and auto-fulfill) or{" "}
+        <VerifiedBadge isVerified={false} /> (an AI-generated idea to research manually — DSers/AliExpress have no public
+        search API, so those results are always AI ideas) → click <strong className="text-white/70">Import</strong> on
+        any product to push it live to Shopify.
       </div>
 
       <Tabs value={activeTab} onValueChange={setActiveTab}>
@@ -317,6 +332,7 @@ export default function SourcingPage() {
                             <div className="flex items-start justify-between gap-1 mb-1">
                               <div className="flex gap-1 flex-wrap">
                                 <SourceBadge source={product.source} />
+                                <VerifiedBadge isVerified={!!product.isVerified} />
                                 {product.isBestPick && <Badge className="bg-emerald-500/10 text-emerald-400 border-emerald-500/20 text-[10px]"><Crown className="w-2.5 h-2.5 mr-0.5" />Best Pick</Badge>}
                               </div>
                               {product.aiScore != null && <ScoreBadge score={product.aiScore} />}

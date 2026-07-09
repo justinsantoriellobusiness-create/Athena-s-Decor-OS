@@ -104,7 +104,11 @@ import {
   upsertAutonomousConfig,
   getCampaignProducts,
   setCampaignProducts,
+  getRecentActivity,
+  getInventoryGroupedByProduct,
+  logActivity,
 } from "./db";
+import { runInventoryScan } from "./inventoryRunner";
 import { getShopifyClient } from "./shopify";
 import { getConnectedShopifyClient } from "./shopifyHelper";
 import { decryptCredential } from "./crypto";
@@ -1169,51 +1173,21 @@ const sourcingRouter = router({
 });
 // ─── Inventory Router ─────────────────────────────────────────────────────────
 const inventoryRouter = router({
-  getSnapshots: protectedProcedure.query(async () => getInventorySnapshots(100)),
+  getSnapshots: protectedProcedure.query(async () => getInventorySnapshots(2000)),
+
+  // Product-grouped view with images for the Inventory UI (one card per
+  // product, variants nested underneath, instead of a flat variant table).
+  getGrouped: protectedProcedure.query(async () => getInventoryGroupedByProduct()),
 
   scan: protectedProcedure.mutation(async () => {
     const config = await getShopifyConfig();
     if (!config?.isConnected) throw new TRPCError({ code: "BAD_REQUEST", message: "Shopify not connected" });
-
     try {
-      const client = await getShopifyClient(config.storeDomain, decryptCredential(config.accessToken) ?? config.accessToken);
-      const productsData = await client.getProducts(50);
-
-      const snapshots = productsData.products.flatMap((product) =>
-        product.variants.map((variant) => {
-          const shopifyStock = variant.inventory_quantity;
-          // There's no generic cross-supplier stock API — a real check
-          // would need each product mapped to its specific AutoDS/CJ/DSers
-          // listing, which isn't tracked at this scan point. Shopify's own
-          // tracked stock is the only real number available here.
-          let status: "in_stock" | "low_stock" | "out_of_stock" | "unknown" = "unknown";
-          if (shopifyStock === 0) status = "out_of_stock";
-          else if (shopifyStock < 10) status = "low_stock";
-          else status = "in_stock";
-
-          return {
-            shopifyProductId: String(product.id),
-            shopifyVariantId: String(variant.id),
-            title: `${product.title} - ${variant.title}`,
-            sku: variant.sku,
-            supplierStock: shopifyStock,
-            shopifyStock,
-            status,
-            autoUpdated: false,
-            lastCheckedAt: new Date(),
-          };
-        })
-      );
-
-      for (const snapshot of snapshots) {
-        await upsertInventorySnapshot(snapshot);
-      }
-
-      await updateAutomationSetting("inventory", { lastRunAt: new Date(), lastRunStatus: "success" });
-      return { success: true, scanned: snapshots.length };
+      const result = await runInventoryScan();
+      return { success: true, scanned: result.scanned, outOfStockCount: result.outOfStockCount };
     } catch (err: any) {
-      console.error("[Error]:", err);
-        throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "An error occurred. Please try again." });
+      console.error("[Inventory] Scan failed:", err);
+      throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: err.message || "Inventory scan failed." });
     }
   }),
 
@@ -1222,14 +1196,33 @@ const inventoryRouter = router({
     .mutation(async ({ input }) => {
       const config = await getShopifyConfig();
       if (!config?.isConnected) throw new TRPCError({ code: "BAD_REQUEST", message: "Shopify not connected" });
-
       try {
         const client = await getShopifyClient(config.storeDomain, decryptCredential(config.accessToken) ?? config.accessToken);
         await client.updateProduct(input.shopifyProductId, { status: "draft" });
+        await logActivity({ module: "inventory", level: "info", title: `Manually hid product (marked draft)`, detail: `Shopify product ${input.shopifyProductId}` });
         return { success: true };
       } catch (err: any) {
-        console.error("[Error]:", err);
-        throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "An error occurred. Please try again." });
+        console.error("[Inventory] markOutOfStock failed:", err);
+        throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: err.message || "Failed to draft the product in Shopify." });
+      }
+    }),
+
+  // Un-hide a product previously drafted (manually or by auto-fulfillment)
+  // — the missing "undo" control: nothing in the app could re-publish a
+  // product before this.
+  republish: protectedProcedure
+    .input(z.object({ shopifyProductId: z.string() }))
+    .mutation(async ({ input }) => {
+      const config = await getShopifyConfig();
+      if (!config?.isConnected) throw new TRPCError({ code: "BAD_REQUEST", message: "Shopify not connected" });
+      try {
+        const client = await getShopifyClient(config.storeDomain, decryptCredential(config.accessToken) ?? config.accessToken);
+        await client.updateProduct(input.shopifyProductId, { status: "active" });
+        await logActivity({ module: "inventory", level: "info", title: `Manually republished product (marked active)`, detail: `Shopify product ${input.shopifyProductId}` });
+        return { success: true };
+      } catch (err: any) {
+        console.error("[Inventory] republish failed:", err);
+        throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: err.message || "Failed to republish the product in Shopify." });
       }
     }),
 });
@@ -3547,6 +3540,13 @@ const autonomousRouter = router({
     }),
 });
 
+// ─── Activity Router (real proof-of-work feed for every automation) ──────────
+const activityRouter = router({
+  getRecent: protectedProcedure
+    .input(z.object({ limit: z.number().min(1).max(500).default(100), module: z.string().optional() }).optional())
+    .query(async ({ input }) => getRecentActivity({ limit: input?.limit, module: input?.module })),
+});
+
 // ─── App Router ───────────────────────────────────────────────────────────────
 export const appRouter = router({
   system: systemRouter,
@@ -3554,6 +3554,7 @@ export const appRouter = router({
   shopify: shopifyRouter,
   scheduler: schedulerRouter,
   dashboard: dashboardRouter,
+  activity: activityRouter,
   seo: seoRouter,
   blog: blogRouter,
   sourcing: sourcingRouter,

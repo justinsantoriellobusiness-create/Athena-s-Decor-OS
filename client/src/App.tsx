@@ -22,6 +22,7 @@ import IntegrationsPage from "./pages/IntegrationsPage";
 import BacklinkerPage from "./pages/BacklinkerPage";
 import EmailCampaignsPage from "./pages/EmailCampaignsPage";
 import AutomationHubPage from "./pages/AutomationHubPage";
+import ActivityPage from "./pages/ActivityPage";
 
 function Router() {
   return (
@@ -44,6 +45,7 @@ function Router() {
       <Route path="/backlinker" component={() => <AppLayout><BacklinkerPage /></AppLayout>} />
       <Route path="/email-campaigns" component={() => <AppLayout><EmailCampaignsPage /></AppLayout>} />
       <Route path="/automation" component={() => <AppLayout><AutomationHubPage /></AppLayout>} />
+      <Route path="/activity" component={() => <AppLayout><ActivityPage /></AppLayout>} />
       <Route component={NotFound} />
     </Switch>
   );

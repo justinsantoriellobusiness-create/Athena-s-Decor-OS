@@ -12,6 +12,7 @@ import { instrumentEmailHtml } from "./emailTracking";
 import { runFullAudit } from "./auditRunner";
 import { runSourcingScrape } from "./sourcingRunner";
 import { runAutoFulfillment } from "./fulfillmentRunner";
+import { runInventoryScan } from "./inventoryRunner";
 import { optimizeActiveCampaignBudgets } from "./adsRunner";
 import { storagePut } from "./storage";
 import { sleep } from "./rateLimiter";
@@ -44,6 +45,7 @@ import {
   getAdCampaigns,
   updateAdCampaign,
   getSourcingSpecs,
+  logActivity,
 } from "./db";
 import { getShopifyClient } from "./shopify";
 import { decryptCredential, decryptCredentials } from "./crypto";
@@ -98,13 +100,21 @@ export function registerScheduledRoutes(app: Router) {
       });
       const raw = response.choices[0]?.message?.content;
       const parsed = JSON.parse(typeof raw === "string" ? raw : "{}");
-      await insertSeoKeywords((parsed.keywords || []).map((k: any) => ({ ...k, source: "scheduled" })));
-      await updateSeoJob(jobId, { status: "success", completedAt: new Date(), result: { count: parsed.keywords?.length || 0 } });
-      await updateAutomationSetting("seo", { lastRunAt: new Date(), lastRunStatus: "success" });
+      const keywordList = (parsed.keywords || []) as any[];
+      await insertSeoKeywords(keywordList.map((k: any) => ({ ...k, source: "scheduled" })));
+      await updateSeoJob(jobId, { status: "success", completedAt: new Date(), result: { count: keywordList.length } });
+      const topKeywords = keywordList.slice(0, 5).map(k => k.keyword).join(", ");
+      await updateAutomationSetting("seo", { lastRunAt: new Date(), lastRunStatus: "success", lastRunMessage: `Found ${keywordList.length} keywords, e.g. ${topKeywords}` });
+      await logActivity({
+        module: "seo", level: "success", title: `Found ${keywordList.length} new SEO keywords`,
+        detail: keywordList.length ? `Top results: ${topKeywords}` : "No keywords returned.",
+        metadata: { keywords: keywordList.slice(0, 20) },
+      });
       res.json({ success: true });
     } catch (err: any) {
       await updateSeoJob(jobId, { status: "error", completedAt: new Date(), errorMessage: err.message });
-      await updateAutomationSetting("seo", { lastRunAt: new Date(), lastRunStatus: "error" });
+      await updateAutomationSetting("seo", { lastRunAt: new Date(), lastRunStatus: "error", lastRunMessage: err.message });
+      await logActivity({ module: "seo", level: "error", title: "SEO keyword research failed", detail: err.message });
       res.status(500).json({ error: err.message });
     }
   });
@@ -154,9 +164,16 @@ export function registerScheduledRoutes(app: Router) {
         featuredImageUrl, featuredImageAlt: featuredImageUrl ? `${postData.title} - Home Decor` : undefined,
       }, autoPublish);
       await updateAutomationSetting("blog", { lastRunAt: new Date(), lastRunStatus: "success", lastRunMessage: `${autoPublish ? "published" : "drafted"}: ${postData.title}${imageWarning}` });
+      await logActivity({
+        module: "blog", level: "success",
+        title: `${autoPublish ? "Published" : "Drafted"} blog post: "${postData.title}"`,
+        detail: `${postData.excerpt ?? ""}${imageWarning}`,
+        metadata: { title: postData.title, tags: postData.tags, autoPublish },
+      });
       res.json({ success: true });
     } catch (err: any) {
       await updateAutomationSetting("blog", { lastRunAt: new Date(), lastRunStatus: "error", lastRunMessage: err.message });
+      await logActivity({ module: "blog", level: "error", title: "Blog post generation failed", detail: err.message });
       res.status(500).json({ error: err.message });
     }
   });
@@ -169,50 +186,11 @@ export function registerScheduledRoutes(app: Router) {
     try {
       const config = await getShopifyConfig();
       if (!config?.isConnected) return res.json({ skipped: true, reason: "Shopify not connected" });
-
-      const client = await getShopifyClient(config.storeDomain, decryptCredential(config.accessToken) ?? config.accessToken);
-      const products = await client.getAllProducts();
-
-      let outOfStockCount = 0;
-      let draftFailures = 0;
-      for (const product of products) {
-        for (const variant of product.variants) {
-          const shopifyStock = variant.inventory_quantity;
-          const status = shopifyStock === 0 ? "out_of_stock" : shopifyStock < 10 ? "low_stock" : "in_stock";
-          await upsertInventorySnapshot({
-            shopifyProductId: String(product.id),
-            shopifyVariantId: String(variant.id),
-            title: `${product.title} - ${variant.title}`,
-            sku: variant.sku,
-            supplierStock: shopifyStock,
-            shopifyStock,
-            status,
-            autoUpdated: false,
-            lastCheckedAt: new Date(),
-          });
-          if (status === "out_of_stock") {
-            outOfStockCount++;
-            try {
-              await client.updateProduct(String(product.id), { status: "draft" });
-            } catch (draftErr) {
-              draftFailures++;
-              console.warn(`[Inventory] Failed to draft out-of-stock product ${product.id}:`, draftErr);
-            }
-          }
-        }
-      }
-
-      if (draftFailures > 0) {
-        await notifyOwner({
-          title: `Inventory: ${draftFailures} out-of-stock product(s) could not be hidden`,
-          content: `${draftFailures} product(s) are out of stock but failed to auto-draft in Shopify and may still be purchasable. Review them in Inventory.`,
-        }).catch(() => {});
-      }
-
-      await updateAutomationSetting("inventory", { lastRunAt: new Date(), lastRunStatus: "success", lastRunMessage: `scanned=${products.length} outOfStock=${outOfStockCount}${draftFailures ? ` draftFails=${draftFailures}` : ""}` });
-      res.json({ success: true, outOfStockCount, scanned: products.length });
+      const result = await runInventoryScan();
+      res.json({ success: true, outOfStockCount: result.outOfStockCount, scanned: result.scanned });
     } catch (err: any) {
       await updateAutomationSetting("inventory", { lastRunAt: new Date(), lastRunStatus: "error", lastRunMessage: err.message });
+      await logActivity({ module: "inventory", level: "error", title: "Inventory scan failed", detail: err.message });
       res.status(500).json({ error: err.message });
     }
   });
@@ -366,9 +344,15 @@ export function registerScheduledRoutes(app: Router) {
       }
 
       await updateAutomationSetting("accounting", { lastRunAt: new Date(), lastRunStatus: errors.length && !totalImported ? "error" : "success", lastRunMessage: `imported=${totalImported} flagged=${totalFlagged}${errors.length ? ` errors=${errors.length}` : ""}` });
+      await logActivity({
+        module: "accounting", level: errors.length ? "warning" : "success",
+        title: `Synced ${totalImported} transaction(s) across ${results.length} account(s)`,
+        detail: results.map(r => `${r.account}: ${r.error ? `failed (${r.error})` : `${r.imported} imported, ${r.skipped} skipped`}`).join("\n"),
+      });
       res.json({ success: true, accounts: results, totalImported, totalFlagged });
     } catch (err: any) {
       await updateAutomationSetting("accounting", { lastRunAt: new Date(), lastRunStatus: "error", lastRunMessage: err.message });
+      await logActivity({ module: "accounting", level: "error", title: "Accounting sync failed", detail: err.message });
       res.status(500).json({ error: err.message });
     }
   });
@@ -400,8 +384,16 @@ export function registerScheduledRoutes(app: Router) {
         }
         await upsertAutonomousConfig(config.userId, "email_scraper", { lastAutoRunAt: new Date(), nextAutoRunAt: new Date(Date.now() + config.frequencyHours * 3600000) });
       }
+      if (totalFound > 0) {
+        await logActivity({
+          module: "email_scraper", level: "info",
+          title: `Generated ${totalFound} AI prospect persona(s) for research`,
+          detail: "These are AI-invented personas modeled on competitor customers, not real scraped contacts — they're excluded from real email sends. Import real customers via Email Campaigns instead.",
+        });
+      }
       res.json({ success: true, totalFound });
     } catch (err: any) {
+      await logActivity({ module: "email_scraper", level: "error", title: "Prospect scraper failed", detail: err.message });
       res.status(500).json({ error: err.message });
     }
   });
@@ -448,8 +440,16 @@ export function registerScheduledRoutes(app: Router) {
         await upsertAutonomousConfig(config.userId, "email_campaigns", { lastAutoRunAt: new Date(), nextAutoRunAt: new Date(Date.now() + config.frequencyHours * 3600000) });
         totalSent += batchDelivered;
       }
+      if (totalSent > 0) {
+        await logActivity({
+          module: "email_campaigns", level: "success",
+          title: `Sent ${totalSent} campaign email(s)`,
+          detail: "Sent to real prospects only (AI-generated personas are always excluded).",
+        });
+      }
       res.json({ success: true, totalSent });
     } catch (err: any) {
+      await logActivity({ module: "email_campaigns", level: "error", title: "Email campaign send failed", detail: err.message });
       res.status(500).json({ error: err.message });
     }
   });
@@ -476,8 +476,16 @@ export function registerScheduledRoutes(app: Router) {
         await upsertAutonomousConfig(config.userId, "backlinker", { lastAutoRunAt: new Date(), nextAutoRunAt: new Date(Date.now() + config.frequencyHours * 3600000) });
         totalOpportunities += opportunities.length;
       }
+      if (totalOpportunities > 0) {
+        await logActivity({
+          module: "backlinker", level: "info",
+          title: `Found ${totalOpportunities} backlink opportunit${totalOpportunities === 1 ? "y" : "ies"}`,
+          detail: "AI-suggested targets — review and verify before sending outreach.",
+        });
+      }
       res.json({ success: true, totalOpportunities });
     } catch (err: any) {
+      await logActivity({ module: "backlinker", level: "error", title: "Backlinker run failed", detail: err.message });
       res.status(500).json({ error: err.message });
     }
   });
@@ -490,10 +498,16 @@ export function registerScheduledRoutes(app: Router) {
       let runsCompleted = 0;
       for (const config of configs) {
         try {
-          await runFullAudit();
+          const result = await runFullAudit();
           runsCompleted++;
+          await logActivity({
+            module: "site_audit", level: result.overallScore < 60 ? "warning" : "success",
+            title: `Site audit complete — score ${result.overallScore}/100, ${result.issueCount} issue(s) found`,
+            detail: "Review flagged issues under Site Audit and apply fixes.",
+          });
         } catch (err: any) {
           console.warn(`[AutoSiteAudit] Run failed for user ${config.userId}:`, err.message);
+          await logActivity({ module: "site_audit", level: "error", title: "Site audit run failed", detail: err.message });
         }
         await upsertAutonomousConfig(config.userId, "site_audit", { lastAutoRunAt: new Date(), nextAutoRunAt: new Date(Date.now() + config.frequencyHours * 3600000) });
       }
@@ -513,10 +527,18 @@ export function registerScheduledRoutes(app: Router) {
         const specs = await getSourcingSpecs();
         for (const spec of specs) {
           try {
-            await runSourcingScrape(spec.id);
+            const result = await runSourcingScrape(spec.id);
             specsScraped++;
+            await logActivity({
+              module: "product_sourcing", level: "success",
+              title: `Sourcing "${spec.name}": found ${result.count} product(s), ${result.verifiedCount} verified real listings`,
+              detail: result.verifiedCount < result.count
+                ? `${result.count - result.verifiedCount} of these are AI-generated ideas (no live supplier match) — only the ${result.verifiedCount} verified ones can be auto-imported and auto-fulfilled.`
+                : "All results are verified live supplier listings.",
+            });
           } catch (err: any) {
             console.warn(`[AutoSourcing] Scrape failed for spec ${spec.id}:`, err.message);
+            await logActivity({ module: "product_sourcing", level: "error", title: `Sourcing "${spec.name}" failed`, detail: err.message });
           }
           await sleep(500);
         }
@@ -555,12 +577,19 @@ export function registerScheduledRoutes(app: Router) {
             featuredImageAlt = `${post.title} - Home Decor`;
           }
         } catch {}
-        await createAndPublishBlogPost({ title: post.title, slug: post.slug, content: post.content, excerpt: post.excerpt, seoTitle: post.seoTitle, seoDescription: post.seoDescription, tags: post.tags, featuredImageUrl, featuredImageAlt }, autoPublish);
+        const publishResult = await createAndPublishBlogPost({ title: post.title, slug: post.slug, content: post.content, excerpt: post.excerpt, seoTitle: post.seoTitle, seoDescription: post.seoDescription, tags: post.tags, featuredImageUrl, featuredImageAlt }, autoPublish);
         await upsertAutonomousConfig(config.userId, "blog", { lastAutoRunAt: new Date(), nextAutoRunAt: new Date(Date.now() + config.frequencyHours * 3600000) });
+        await logActivity({
+          module: "blog", level: "success",
+          title: `${publishResult.published ? "Published" : "Drafted"} blog post: "${post.title}"`,
+          detail: post.excerpt ?? "",
+          metadata: { title: post.title, tags: post.tags },
+        });
         totalPosts++;
       }
       res.json({ success: true, totalPosts });
     } catch (err: any) {
+      await logActivity({ module: "blog", level: "error", title: "Autonomous blog generation failed", detail: err.message });
       res.status(500).json({ error: err.message });
     }
   });
@@ -571,14 +600,18 @@ export function registerScheduledRoutes(app: Router) {
     if (!setting?.enabled) return res.json({ skipped: true });
     try {
       const config = await getShopifyConfig();
+      let productCount = 0;
       if (config?.isConnected) {
         const client = await getShopifyClient(config.storeDomain, decryptCredential(config.accessToken) ?? config.accessToken);
-        await client.getProductCount();
+        const countData = await client.getProductCount();
+        productCount = countData.count ?? 0;
       }
-      await updateAutomationSetting("shopify", { lastRunAt: new Date(), lastRunStatus: "success" });
+      await updateAutomationSetting("shopify", { lastRunAt: new Date(), lastRunStatus: "success", lastRunMessage: `${productCount} products` });
+      await logActivity({ module: "shopify", level: "success", title: `Shopify sync: ${productCount} products confirmed` });
       res.json({ success: true });
     } catch (err: any) {
-      await updateAutomationSetting("shopify", { lastRunAt: new Date(), lastRunStatus: "error" });
+      await updateAutomationSetting("shopify", { lastRunAt: new Date(), lastRunStatus: "error", lastRunMessage: err.message });
+      await logActivity({ module: "shopify", level: "error", title: "Shopify sync failed", detail: err.message });
       res.status(500).json({ error: err.message });
     }
   });

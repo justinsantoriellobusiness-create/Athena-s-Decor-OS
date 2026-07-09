@@ -73,6 +73,7 @@ export async function createAndPublishBlogPost(
       }
       // Connected but no blog found — surface it instead of silently drafting.
       await notifyOwner({
+        module: "blog",
         title: "Blog auto-publish skipped: no Shopify blog found",
         content: `"${post.title}" was saved as a draft because your Shopify store has no blog to publish to. Create a blog in Shopify (Online Store → Blog posts) to enable auto-publishing.`,
       }).catch(() => {});
@@ -81,6 +82,7 @@ export async function createAndPublishBlogPost(
       // Tell the owner rather than reporting success upstream.
       console.warn("[Blog] Autonomous Shopify publish failed:", err.message);
       await notifyOwner({
+        module: "blog",
         title: "Blog auto-publish failed",
         content: `"${post.title}" was generated but could not be published to Shopify (${err.message}). It's saved as a draft — review it under Blog.`,
       }).catch(() => {});

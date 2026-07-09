@@ -5,7 +5,7 @@ import { cn } from "@/lib/utils";
 import {
   LayoutDashboard, ShoppingBag, Search, FileText, Package, BarChart3, Megaphone,
   Settings, Zap, ChevronRight, LogOut, Loader2, ShieldCheck, Bot, TrendingUp, DollarSign,
-  Link2, Mail, Plug,
+  Link2, Mail, Plug, Activity,
 } from "lucide-react";
 import { trpc } from "@/lib/trpc";
 
@@ -16,6 +16,7 @@ const navSections = [
       { href: "/", label: "Dashboard", icon: LayoutDashboard },
       { href: "/analytics", label: "Analytics", icon: TrendingUp },
       { href: "/automation", label: "Automation Hub", icon: Zap },
+      { href: "/activity", label: "Activity Feed", icon: Activity },
       { href: "/assistant", label: "AI Assistant", icon: Bot },
     ],
   },

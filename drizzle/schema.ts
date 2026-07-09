@@ -723,3 +723,18 @@ export const zapierWebhooks = mysqlTable("zapier_webhooks", {
   createdAt: timestamp("createdAt").defaultNow().notNull(),
 });
 export type ZapierWebhook = typeof zapierWebhooks.$inferSelect;
+
+// ─── Activity Log ──────────────────────────────────────────────────────────
+// Every automation run (scheduled, autonomous, or manually triggered) writes
+// here so the app can show real proof of what happened, when, and with what
+// result — not just a "success" badge with no detail behind it.
+export const activityLog = mysqlTable("activity_log", {
+  id: int("id").autoincrement().primaryKey(),
+  module: varchar("module", { length: 64 }).notNull(), // e.g. "fulfillment", "seo", "inventory"
+  level: mysqlEnum("level", ["info", "success", "warning", "error"]).default("info").notNull(),
+  title: varchar("title", { length: 255 }).notNull(),
+  detail: text("detail"), // human-readable specifics: what was found/created/changed
+  metadata: json("metadata"), // structured extras (counts, ids, links) for richer UI rendering
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+});
+export type ActivityLog = typeof activityLog.$inferSelect;

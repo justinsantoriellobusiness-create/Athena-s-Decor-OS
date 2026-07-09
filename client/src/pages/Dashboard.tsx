@@ -149,36 +149,8 @@ export default function Dashboard() {
 
       {/* Recent Activity */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        {/* Recent Jobs */}
-        <div className="glass rounded-xl p-6">
-          <div className="flex items-center gap-2 mb-4">
-            <Activity className="w-4 h-4 text-primary" />
-            <h3 className="text-sm font-semibold text-foreground">Recent SEO Jobs</h3>
-          </div>
-          {isLoading ? (
-            <div className="space-y-3">
-              {Array(3).fill(0).map((_, i) => <Skeleton key={i} className="h-10 rounded-lg" />)}
-            </div>
-          ) : data?.recentJobs?.length ? (
-            <div className="space-y-2">
-              {data.recentJobs.map((job: any) => (
-                <div key={job.id} className="flex items-center justify-between py-2 border-b border-border/30 last:border-0">
-                  <div className="flex items-center gap-2.5">
-                    {job.status === "success" ? <CheckCircle2 className="w-3.5 h-3.5 text-green-500" /> :
-                     job.status === "error" ? <AlertCircle className="w-3.5 h-3.5 text-red-500" /> :
-                     <Clock className="w-3.5 h-3.5 text-yellow-500" />}
-                    <span className="text-xs text-foreground capitalize">{job.type.replace(/_/g, " ")}</span>
-                  </div>
-                  <span className="text-[10px] text-muted-foreground">
-                    {job.createdAt ? new Date(job.createdAt).toLocaleDateString() : "—"}
-                  </span>
-                </div>
-              ))}
-            </div>
-          ) : (
-            <p className="text-xs text-muted-foreground text-center py-4">No jobs run yet. Start the SEO module.</p>
-          )}
-        </div>
+        {/* Live Activity Feed — real proof of what automations have done */}
+        <LiveActivityPanel />
 
         {/* Recent Blog Posts */}
         <div className="glass rounded-xl p-6">
@@ -225,6 +197,45 @@ function StatCard({ label, value, icon, status, color }: {
       </div>
       <p className="text-xl font-bold text-foreground">{value}</p>
       <p className="text-xs text-muted-foreground mt-0.5">{label}</p>
+    </div>
+  );
+}
+
+function LiveActivityPanel() {
+  const [, setLocation] = useLocation();
+  const { data: entries, isLoading } = trpc.activity.getRecent.useQuery({ limit: 8 }, { refetchInterval: 20000 });
+  return (
+    <div className="glass rounded-xl p-6">
+      <div className="flex items-center justify-between mb-4">
+        <div className="flex items-center gap-2">
+          <Activity className="w-4 h-4 text-primary" />
+          <h3 className="text-sm font-semibold text-foreground">Live Activity</h3>
+        </div>
+        <button onClick={() => setLocation("/activity")} className="text-xs text-muted-foreground hover:text-primary flex items-center gap-1 transition-colors">
+          View all <ArrowRight className="w-3 h-3" />
+        </button>
+      </div>
+      {isLoading ? (
+        <div className="space-y-3">{Array(4).fill(0).map((_, i) => <Skeleton key={i} className="h-10 rounded-lg" />)}</div>
+      ) : entries && entries.length > 0 ? (
+        <div className="space-y-2">
+          {entries.map((entry: any) => (
+            <div key={entry.id} className="flex items-start gap-2.5 py-2 border-b border-border/30 last:border-0">
+              {entry.level === "success" ? <CheckCircle2 className="w-3.5 h-3.5 text-green-500 mt-0.5 flex-shrink-0" /> :
+               entry.level === "error" ? <AlertCircle className="w-3.5 h-3.5 text-red-500 mt-0.5 flex-shrink-0" /> :
+               <Clock className="w-3.5 h-3.5 text-yellow-500 mt-0.5 flex-shrink-0" />}
+              <div className="flex-1 min-w-0">
+                <p className="text-xs text-foreground truncate">{entry.title}</p>
+              </div>
+              <span className="text-[10px] text-muted-foreground flex-shrink-0">
+                {new Date(entry.createdAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+              </span>
+            </div>
+          ))}
+        </div>
+      ) : (
+        <p className="text-xs text-muted-foreground text-center py-4">No activity yet. Enable an automation to see it appear here.</p>
+      )}
     </div>
   );
 }

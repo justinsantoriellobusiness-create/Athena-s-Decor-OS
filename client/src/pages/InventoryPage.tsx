@@ -1,8 +1,9 @@
 import { useState } from "react";
 import { trpc } from "@/lib/trpc";
 import { toast } from "sonner";
-import { BarChart3, Loader2, RefreshCw, AlertTriangle, CheckCircle2, XCircle, Package, TrendingDown, ToggleLeft, ToggleRight, Zap } from "lucide-react";
+import { BarChart3, Loader2, RefreshCw, AlertTriangle, CheckCircle2, XCircle, Package, ToggleLeft, ToggleRight, Zap, ExternalLink, EyeOff, Eye, Search } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
 
@@ -15,38 +16,50 @@ function StockBadge({ status }: { status: string }) {
 
 export default function InventoryPage() {
   const [filter, setFilter] = useState<"all" | "in_stock" | "low_stock" | "out_of_stock">("all");
+  const [search, setSearch] = useState("");
   const utils = trpc.useUtils();
 
-  const { data: snapshots, isLoading } = trpc.inventory.getSnapshots.useQuery();
+  const { data: groups, isLoading } = trpc.inventory.getGrouped.useQuery();
+  const { data: shopifyConfig } = trpc.shopify.getConfig.useQuery();
 
   const scanMutation = trpc.inventory.scan.useMutation({
-    onSuccess: (data) => { toast.success(`Scanned ${data.scanned} variants`); utils.inventory.getSnapshots.invalidate(); },
+    onSuccess: (data) => { toast.success(`Scanned ${data.scanned} products — ${data.outOfStockCount} out of stock`); utils.inventory.getGrouped.invalidate(); },
     onError: (err) => toast.error(err.message),
   });
   const markOutMutation = trpc.inventory.markOutOfStock.useMutation({
-    onSuccess: () => { toast.success("Product marked as draft in Shopify"); utils.inventory.getSnapshots.invalidate(); },
+    onSuccess: () => { toast.success("Product hidden (marked draft) in Shopify"); utils.inventory.getGrouped.invalidate(); },
+    onError: (err) => toast.error(err.message),
+  });
+  const republishMutation = trpc.inventory.republish.useMutation({
+    onSuccess: () => { toast.success("Product republished (marked active) in Shopify"); utils.inventory.getGrouped.invalidate(); },
     onError: (err) => toast.error(err.message),
   });
 
-  const filtered = (snapshots || []).filter((s: any) => filter === "all" || s.status === filter);
+  const allGroups = groups || [];
+  const filtered = allGroups
+    .filter((g: any) => filter === "all" || g.status === filter)
+    .filter((g: any) => !search || g.title.toLowerCase().includes(search.toLowerCase()));
 
   const counts = {
-    all: snapshots?.length ?? 0,
-    in_stock: snapshots?.filter((s: any) => s.status === "in_stock").length ?? 0,
-    low_stock: snapshots?.filter((s: any) => s.status === "low_stock").length ?? 0,
-    out_of_stock: snapshots?.filter((s: any) => s.status === "out_of_stock").length ?? 0,
+    all: allGroups.length,
+    in_stock: allGroups.filter((g: any) => g.status === "in_stock").length,
+    low_stock: allGroups.filter((g: any) => g.status === "low_stock").length,
+    out_of_stock: allGroups.filter((g: any) => g.status === "out_of_stock").length,
   };
 
   const { data: settings } = trpc.scheduler.getAll.useQuery();
   const updateScheduler = trpc.scheduler.update.useMutation({ onSuccess: () => toast.success("Automation updated") });
   const invSetting = settings?.find((s: any) => s.module === "inventory");
 
+  const shopifyAdminUrl = (productId: string) =>
+    shopifyConfig?.storeDomain ? `https://${shopifyConfig.storeDomain}/admin/products/${productId}` : undefined;
+
   return (
     <div className="p-6 lg:p-8 space-y-6">
-      <div className="flex items-start justify-between gap-4">
+      <div className="flex items-start justify-between gap-4 flex-wrap">
         <div>
           <h1 className="text-2xl font-bold text-white tracking-tight">Inventory Tracker</h1>
-          <p className="text-white/40 text-sm mt-1">Track Shopify stock levels and auto-draft products when they run out</p>
+          <p className="text-white/40 text-sm mt-1">Live Shopify stock, product images, and manual show/hide controls</p>
         </div>
         <div className="flex items-center gap-3">
           {invSetting && (
@@ -78,7 +91,7 @@ export default function InventoryPage() {
       {/* Stats */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
         {[
-          { key: "all", label: "Total Variants", color: "oklch(0.55 0.01 265)", icon: Package },
+          { key: "all", label: "Total Products", color: "oklch(0.55 0.01 265)", icon: Package },
           { key: "in_stock", label: "In Stock", color: "oklch(0.65 0.18 145)", icon: CheckCircle2 },
           { key: "low_stock", label: "Low Stock", color: "oklch(0.78 0.15 65)", icon: AlertTriangle },
           { key: "out_of_stock", label: "Out of Stock", color: "oklch(0.6 0.22 25)", icon: XCircle },
@@ -97,72 +110,90 @@ export default function InventoryPage() {
         ))}
       </div>
 
-      {/* Table */}
-      <div className="glass rounded-xl overflow-hidden">
-        <div className="px-5 py-4 border-b border-border/50 flex items-center justify-between">
-          <h3 className="text-sm font-semibold text-foreground">
-            {filter === "all" ? "All Variants" : filter.replace(/_/g, " ").replace(/\b\w/g, c => c.toUpperCase())} ({filtered.length})
-          </h3>
-          {filter !== "all" && (
-            <button onClick={() => setFilter("all")} className="text-xs text-muted-foreground hover:text-foreground transition-colors">
-              Clear filter
-            </button>
-          )}
+      {/* Search + filter status */}
+      <div className="flex items-center gap-3 flex-wrap">
+        <div className="relative w-64">
+          <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground" />
+          <Input
+            placeholder="Search products…"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            className="pl-8 h-8 text-xs bg-secondary/50 border-border/50"
+          />
         </div>
-
-        {isLoading ? (
-          <div className="p-5 space-y-3">{Array(5).fill(0).map((_, i) => <Skeleton key={i} className="h-12 rounded-lg" />)}</div>
-        ) : filtered.length ? (
-          <div className="overflow-x-auto">
-            <table className="w-full text-xs">
-              <thead>
-                <tr className="border-b border-border/30">
-                  <th className="text-left px-5 py-3 text-muted-foreground font-medium">Product / Variant</th>
-                  <th className="text-left px-4 py-3 text-muted-foreground font-medium">SKU</th>
-                  <th className="text-right px-4 py-3 text-muted-foreground font-medium">Shopify Stock</th>
-                  <th className="text-center px-4 py-3 text-muted-foreground font-medium">Status</th>
-                  <th className="text-right px-5 py-3 text-muted-foreground font-medium">Last Checked</th>
-                  <th className="px-5 py-3"></th>
-                </tr>
-              </thead>
-              <tbody>
-                {filtered.map((snap: any) => (
-                  <tr key={snap.id} className="border-b border-border/20 hover:bg-secondary/30 transition-colors">
-                    <td className="px-5 py-3 font-medium text-foreground max-w-[200px] truncate">{snap.title}</td>
-                    <td className="px-4 py-3 text-muted-foreground font-mono">{snap.sku || "—"}</td>
-                    <td className="px-4 py-3 text-right">
-                      <span className={cn("font-semibold", snap.shopifyStock === 0 ? "text-red-400" : snap.shopifyStock < 10 ? "text-yellow-400" : "text-green-400")}>
-                        {snap.shopifyStock}
-                      </span>
-                    </td>
-                    <td className="px-4 py-3 text-center"><StockBadge status={snap.status} /></td>
-                    <td className="px-5 py-3 text-right text-muted-foreground">
-                      {snap.lastCheckedAt ? new Date(snap.lastCheckedAt).toLocaleString() : "—"}
-                    </td>
-                    <td className="px-5 py-3 text-right">
-                      {snap.status === "out_of_stock" && (
-                        <Button size="sm" variant="outline"
-                          className="text-[10px] h-6 px-2 border-red-500/30 text-red-400 hover:bg-red-500/10"
-                          onClick={() => markOutMutation.mutate({ shopifyProductId: snap.shopifyProductId })}
-                          disabled={markOutMutation.isPending}>
-                          <TrendingDown className="w-3 h-3 mr-1" />Mark Draft
-                        </Button>
-                      )}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        ) : (
-          <div className="p-8 text-center">
-            <BarChart3 className="w-8 h-8 text-muted-foreground/30 mx-auto mb-3" />
-            <p className="text-sm text-muted-foreground">
-              {snapshots?.length ? "No items match this filter." : "No inventory data yet. Connect Shopify and run a scan."}
-            </p>
-          </div>
+        {filter !== "all" && (
+          <button onClick={() => setFilter("all")} className="text-xs text-muted-foreground hover:text-foreground transition-colors">
+            Clear status filter
+          </button>
         )}
       </div>
+
+      {/* Product grid with images */}
+      {isLoading ? (
+        <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
+          {Array(8).fill(0).map((_, i) => <Skeleton key={i} className="h-56 rounded-xl" />)}
+        </div>
+      ) : filtered.length ? (
+        <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
+          {filtered.map((group: any) => (
+            <div key={group.shopifyProductId} className="glass rounded-xl overflow-hidden border border-border/30">
+              {group.imageUrl ? (
+                <div className="aspect-square bg-secondary/50 overflow-hidden">
+                  <img src={group.imageUrl} alt={group.title} className="w-full h-full object-cover" onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }} />
+                </div>
+              ) : (
+                <div className="aspect-square bg-secondary/50 flex items-center justify-center">
+                  <Package className="w-8 h-8 text-muted-foreground/30" />
+                </div>
+              )}
+              <div className="p-3 space-y-2">
+                <p className="text-xs font-medium text-foreground line-clamp-2 leading-snug min-h-[2rem]">{group.title}</p>
+                <div className="flex items-center justify-between">
+                  <StockBadge status={group.status} />
+                  <span className="text-[10px] text-muted-foreground">{group.totalStock} units</span>
+                </div>
+                {group.variants.length > 1 && (
+                  <p className="text-[10px] text-muted-foreground/60">{group.variants.length} variants</p>
+                )}
+                <div className="flex items-center gap-1.5 pt-1">
+                  {group.status === "out_of_stock" ? (
+                    <Button size="sm" variant="outline"
+                      className="flex-1 text-[10px] h-7 px-2 border-emerald-500/30 text-emerald-400 hover:bg-emerald-500/10"
+                      onClick={() => republishMutation.mutate({ shopifyProductId: group.shopifyProductId })}
+                      disabled={republishMutation.isPending}>
+                      <Eye className="w-3 h-3 mr-1" />Republish
+                    </Button>
+                  ) : (
+                    <Button size="sm" variant="outline"
+                      className="flex-1 text-[10px] h-7 px-2 border-red-500/30 text-red-400 hover:bg-red-500/10"
+                      onClick={() => markOutMutation.mutate({ shopifyProductId: group.shopifyProductId })}
+                      disabled={markOutMutation.isPending}>
+                      <EyeOff className="w-3 h-3 mr-1" />Hide
+                    </Button>
+                  )}
+                  {shopifyAdminUrl(group.shopifyProductId) && (
+                    <a href={shopifyAdminUrl(group.shopifyProductId)} target="_blank" rel="noopener noreferrer"
+                      className="flex items-center justify-center h-7 w-7 rounded-md border border-border/50 text-muted-foreground hover:text-foreground hover:bg-secondary/50 transition-colors flex-shrink-0"
+                      title="Open in Shopify Admin">
+                      <ExternalLink className="w-3 h-3" />
+                    </a>
+                  )}
+                </div>
+                {group.lastCheckedAt && (
+                  <p className="text-[9px] text-muted-foreground/50">Checked {new Date(group.lastCheckedAt).toLocaleString()}</p>
+                )}
+              </div>
+            </div>
+          ))}
+        </div>
+      ) : (
+        <div className="glass rounded-xl p-12 text-center">
+          <BarChart3 className="w-8 h-8 text-muted-foreground/30 mx-auto mb-3" />
+          <p className="text-sm text-muted-foreground">
+            {allGroups.length ? "No products match this filter." : "No inventory data yet. Connect Shopify and click Scan Now."}
+          </p>
+        </div>
+      )}
     </div>
   );
 }

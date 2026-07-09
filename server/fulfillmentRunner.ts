@@ -110,6 +110,7 @@ export async function runAutoFulfillment(): Promise<FulfillmentResult> {
               );
               result.ordersShipped++;
               await notifyOwner({
+                module: "fulfillment",
                 title: `Order #${order.order_number} shipped`,
                 content: `Tracking ${status.trackNumber} (${status.logisticName || "CJ"}) synced to Shopify — customer notified.`,
               }).catch(() => {});
@@ -125,6 +126,7 @@ export async function runAutoFulfillment(): Promise<FulfillmentResult> {
           if (ageMs > DSERS_ESCALATION_MS && !tags.includes("dsers-escalated")) {
             await client.updateOrderTags(String(order.id), [...tags, "dsers-escalated"].join(", "));
             await notifyOwner({
+              module: "fulfillment",
               title: `Order #${order.order_number} stuck in DSers for 48h+`,
               content: `This order was routed to DSers but still isn't fulfilled. Open DSers and check it — the AliExpress order may have failed or need payment confirmation.`,
             }).catch(() => {});
@@ -161,6 +163,7 @@ export async function runAutoFulfillment(): Promise<FulfillmentResult> {
           await client.updateOrderTags(String(order.id), [...tags, "dsers-fulfill"].join(", "));
           result.ordersRoutedToDsers++;
           await notifyOwner({
+            module: "fulfillment",
             title: `Order #${order.order_number} routed to DSers`,
             content: `All items are DSers-sourced. DSers' Shopify sync will place the AliExpress order (approve it in DSers if you don't have auto-order enabled). The app watches this order and alerts you if it's not fulfilled within 48h.`,
           }).catch(() => {});
@@ -198,6 +201,7 @@ export async function runAutoFulfillment(): Promise<FulfillmentResult> {
               await client.updateOrderTags(String(order.id), [...tags, `cj-order-${cjOrderId}`].join(", "));
               result.ordersPlaced++;
               await notifyOwner({
+                module: "fulfillment",
                 title: `Order #${order.order_number} auto-placed with CJ`,
                 content: `CJ order ${cjOrderId} created for ${cjItems.length} item(s). Tracking syncs automatically once it ships.`,
               }).catch(() => {});
@@ -210,6 +214,7 @@ export async function runAutoFulfillment(): Promise<FulfillmentResult> {
         // ── Unmappable / mixed suppliers → manual ───────────────────────
         await client.updateOrderTags(String(order.id), [...tags, "athena-skip-fulfill"].join(", "));
         await notifyOwner({
+          module: "fulfillment",
           title: `Order #${order.order_number} needs manual fulfillment`,
           content: `Items are unmapped or split across suppliers (only orders fully mapped to verified CJ or DSers products auto-fulfill). Fulfill manually, then mark fulfilled in Shopify.`,
         }).catch(() => {});
@@ -221,6 +226,7 @@ export async function runAutoFulfillment(): Promise<FulfillmentResult> {
 
     if (result.errors.length > 0) {
       await notifyOwner({
+        module: "fulfillment",
         title: "Auto-fulfillment: some orders had errors",
         content: result.errors.slice(0, 10).join("\n"),
       }).catch(() => {});

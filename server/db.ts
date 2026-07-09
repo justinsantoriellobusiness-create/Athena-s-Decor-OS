@@ -48,6 +48,8 @@ import {
   type ZapierConfig,
   zapierWebhooks,
   type ZapierWebhook,
+  activityLog,
+  type ActivityLog,
 } from "../drizzle/schema";
 import { ENV } from "./_core/env";
 
@@ -1155,4 +1157,89 @@ export async function setCampaignProducts(campaignId: number, products: Omit<Cam
   if (products.length > 0) {
     await db.insert(campaignProducts).values(products as any);
   }
+}
+
+// ─── Activity Log ──────────────────────────────────────────────────────────
+// Real, visible proof of what every automation actually did — populated by
+// every scheduled/autonomous/manual run, not just failures. This is what the
+// Activity page and Dashboard feed read from.
+export async function logActivity(entry: {
+  module: string;
+  level?: "info" | "success" | "warning" | "error";
+  title: string;
+  detail?: string;
+  metadata?: Record<string, unknown>;
+}): Promise<void> {
+  try {
+    const db = await getDb();
+    if (!db) return;
+    await db.insert(activityLog).values({
+      module: entry.module,
+      level: entry.level ?? "info",
+      title: entry.title,
+      detail: entry.detail ?? null,
+      metadata: entry.metadata ?? null,
+    } as any);
+  } catch (err) {
+    // Never let logging itself break an automation run.
+    console.warn("[ActivityLog] Failed to write entry:", err);
+  }
+}
+
+export async function getRecentActivity(opts?: { limit?: number; module?: string }): Promise<ActivityLog[]> {
+  const db = await getDb();
+  if (!db) return [];
+  const limit = opts?.limit ?? 100;
+  if (opts?.module) {
+    return db.select().from(activityLog).where(eq(activityLog.module, opts.module)).orderBy(desc(activityLog.createdAt)).limit(limit);
+  }
+  return db.select().from(activityLog).orderBy(desc(activityLog.createdAt)).limit(limit);
+}
+
+// ─── Inventory: grouped-by-product view for the UI ────────────────────────────
+// The raw snapshot table is per-variant; the Inventory page wants one card
+// per product (with image) and its variants nested underneath.
+export type InventoryProductGroup = {
+  shopifyProductId: string;
+  title: string;
+  imageUrl: string | null;
+  status: "in_stock" | "low_stock" | "out_of_stock" | "unknown";
+  totalStock: number;
+  lastCheckedAt: Date | null;
+  variants: InventorySnapshot[];
+};
+
+export async function getInventoryGroupedByProduct(): Promise<InventoryProductGroup[]> {
+  const snapshots = await getInventorySnapshots(2000);
+  const groups = new Map<string, InventoryProductGroup>();
+  for (const snap of snapshots) {
+    const productTitle = snap.title?.split(" - ")[0] ?? snap.title ?? "Untitled product";
+    let group = groups.get(snap.shopifyProductId);
+    if (!group) {
+      group = {
+        shopifyProductId: snap.shopifyProductId,
+        title: productTitle,
+        imageUrl: snap.imageUrl ?? null,
+        status: "unknown",
+        totalStock: 0,
+        lastCheckedAt: snap.lastCheckedAt,
+        variants: [],
+      };
+      groups.set(snap.shopifyProductId, group);
+    }
+    group.variants.push(snap);
+    group.totalStock += snap.shopifyStock ?? 0;
+    if (!group.imageUrl && snap.imageUrl) group.imageUrl = snap.imageUrl;
+    if (snap.lastCheckedAt && (!group.lastCheckedAt || snap.lastCheckedAt > group.lastCheckedAt)) {
+      group.lastCheckedAt = snap.lastCheckedAt;
+    }
+  }
+  for (const group of Array.from(groups.values())) {
+    const statuses = group.variants.map((v: InventorySnapshot) => v.status);
+    if (statuses.every((s: string) => s === "out_of_stock")) group.status = "out_of_stock";
+    else if (statuses.some((s: string) => s === "out_of_stock" || s === "low_stock")) group.status = "low_stock";
+    else if (statuses.every((s: string) => s === "in_stock")) group.status = "in_stock";
+    else group.status = "unknown";
+  }
+  return Array.from(groups.values()).sort((a, b) => a.title.localeCompare(b.title));
 }
