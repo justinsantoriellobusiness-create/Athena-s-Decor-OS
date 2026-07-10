@@ -37,6 +37,9 @@ function timeAgo(date: string | Date | null | undefined) {
 }
 
 const LOW_BALANCE_THRESHOLD = 20;
+// DSers has no public API, so there's no per-order deep link — this jumps
+// to the DSers dashboard itself so you can find the order there manually.
+const DSERS_DASHBOARD_URL = "https://www.dsers.com/";
 
 export default function FulfillmentPage() {
   const [filter, setFilter] = useState<string>("all");
@@ -220,6 +223,18 @@ export default function FulfillmentPage() {
                   <StatusBadge status={order.status} />
                   {order.cjOrderId && <p className="text-[9px] text-muted-foreground/60 mt-0.5">CJ order {order.cjOrderId}</p>}
                 </div>
+                {(order.status === "routed_to_dsers" || order.status === "dsers_stuck") && (
+                  <a href={DSERS_DASHBOARD_URL} target="_blank" rel="noopener noreferrer"
+                    className={cn(
+                      "flex items-center justify-center h-7 w-7 rounded-md border transition-colors flex-shrink-0",
+                      order.status === "dsers_stuck"
+                        ? "border-red-500/30 text-red-400 hover:bg-red-500/10"
+                        : "border-border/50 text-muted-foreground hover:text-foreground hover:bg-secondary/50"
+                    )}
+                    title="Open DSers dashboard — no per-order link since DSers has no public API, but this gets you there fast">
+                    <Truck className="w-3 h-3" />
+                  </a>
+                )}
                 {shopifyOrderUrl(order.id) && (
                   <a href={shopifyOrderUrl(order.id)} target="_blank" rel="noopener noreferrer"
                     className="flex items-center justify-center h-7 w-7 rounded-md border border-border/50 text-muted-foreground hover:text-foreground hover:bg-secondary/50 transition-colors flex-shrink-0"
