@@ -21,6 +21,7 @@ import { decryptCredential, decryptCredentials } from "./crypto";
 import {
   getShopifyConfig, getSourcingAppCredential, getDb,
   tryAcquireAutomationLock, releaseAutomationLock,
+  getOrCreateCjExpenseAccount, insertTransaction,
 } from "./db";
 import { sourcedProducts } from "../drizzle/schema";
 import { eq, inArray } from "drizzle-orm";
@@ -42,8 +43,34 @@ export type FulfillmentResult = {
 
 const DSERS_ESCALATION_MS = 48 * 3600 * 1000;
 
-function orderTags(order: any): string[] {
+export function orderTags(order: any): string[] {
   return String(order.tags ?? "").split(",").map((t: string) => t.trim()).filter(Boolean);
+}
+
+export type FulfillmentOrderStatus =
+  | "pending"
+  | "placed_with_cj"
+  | "shipped"
+  | "routed_to_dsers"
+  | "dsers_stuck"
+  | "needs_manual"
+  | "cancelled";
+
+/**
+ * Reads the same tags/fields the fulfillment loop itself writes, so the
+ * Orders UI shows exactly what the last run actually did — not a separate
+ * guess at order state.
+ */
+export function deriveOrderStatus(order: any): { status: FulfillmentOrderStatus; cjOrderId?: string } {
+  if (order.cancelled_at) return { status: "cancelled" };
+  if (order.fulfillment_status === "fulfilled") return { status: "shipped" };
+  const tags = orderTags(order);
+  const cjTag = tags.find(t => t.startsWith("cj-order-"));
+  if (cjTag) return { status: "placed_with_cj", cjOrderId: cjTag.slice("cj-order-".length) };
+  if (tags.includes("dsers-escalated")) return { status: "dsers_stuck" };
+  if (tags.includes("dsers-fulfill")) return { status: "routed_to_dsers" };
+  if (tags.includes("athena-skip-fulfill")) return { status: "needs_manual" };
+  return { status: "pending" };
 }
 
 export async function runAutoFulfillment(): Promise<FulfillmentResult> {
@@ -172,6 +199,7 @@ export async function runAutoFulfillment(): Promise<FulfillmentResult> {
 
         if (allCj && cjToken) {
           const cjItems: { vid: string; quantity: number }[] = [];
+          let estimatedCost = 0;
           let unmappable = false;
           for (const li of lineItems) {
             const pid = cjMappingFor(li)?.externalId;
@@ -179,7 +207,9 @@ export async function runAutoFulfillment(): Promise<FulfillmentResult> {
             const variants = await getCjProductVariants(cjToken, pid);
             const match = (li.sku && variants.find(v => v.variantSku === li.sku)) || variants[0];
             if (!match) { unmappable = true; break; }
-            cjItems.push({ vid: match.vid, quantity: li.quantity ?? 1 });
+            const qty = li.quantity ?? 1;
+            cjItems.push({ vid: match.vid, quantity: qty });
+            estimatedCost += (match.variantSellPrice ?? 0) * qty;
             await sleep(300);
           }
 
@@ -205,6 +235,30 @@ export async function runAutoFulfillment(): Promise<FulfillmentResult> {
                 title: `Order #${order.order_number} auto-placed with CJ`,
                 content: `CJ order ${cjOrderId} created for ${cjItems.length} item(s). Tracking syncs automatically once it ships.`,
               }).catch(() => {});
+              // Best-effort COGS entry so real spend shows up in Accounting
+              // without waiting on the user to enter it by hand. Estimated
+              // from CJ's listed price at order time, not the exact invoice
+              // — never let a bookkeeping failure affect the order itself.
+              try {
+                const accountId = await getOrCreateCjExpenseAccount();
+                if (accountId && estimatedCost > 0) {
+                  await insertTransaction({
+                    accountId,
+                    date: new Date(),
+                    description: `CJ order ${cjOrderId} — Shopify order #${order.order_number}`,
+                    amount: -Math.round(estimatedCost * 100) / 100,
+                    type: "expense",
+                    category: "product_cost",
+                    source: "cj_dropshipping",
+                    taxDeductible: true,
+                    externalId: cjOrderId,
+                    orderId: String(order.id),
+                    notes: "Estimated from CJ's listed price at order time — verify the exact charged amount in your CJ order history.",
+                  } as any);
+                }
+              } catch (bookkeepingErr) {
+                console.warn(`[Fulfillment] Failed to record CJ spend for order ${cjOrderId}:`, bookkeepingErr);
+              }
             }
             await sleep(500);
             continue;

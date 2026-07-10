@@ -110,6 +110,8 @@ import {
   logActivity,
 } from "./db";
 import { runInventoryScan, computeStatus } from "./inventoryRunner";
+import { runAutoFulfillment, deriveOrderStatus } from "./fulfillmentRunner";
+import { getCjAccessToken, getCjBalance } from "./_core/cjDropshipping";
 import { getShopifyClient } from "./shopify";
 import { getConnectedShopifyClient } from "./shopifyHelper";
 import { decryptCredential } from "./crypto";
@@ -1267,6 +1269,61 @@ const inventoryRouter = router({
         throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: err.message || "Failed to set inventory quantity in Shopify." });
       }
     }),
+});
+
+// ─── Fulfillment Router ────────────────────────────────────────────────────────
+// Gives the auto-fulfillment engine (real CJ orders, real money) the same
+// kind of visible surface Inventory has: an order list with real state
+// (derived from the exact tags the engine itself writes), a manual trigger,
+// and the CJ wallet balance it spends from — previously the only way to see
+// any of this was scrolling the Activity Feed.
+const fulfillmentRouter = router({
+  getOrders: protectedProcedure.query(async () => {
+    const config = await getShopifyConfig();
+    if (!config?.isConnected) return { connected: false as const, orders: [] };
+    const client = await getShopifyClient(config.storeDomain, decryptCredential(config.accessToken) ?? config.accessToken);
+    const { orders } = await client.getOrders(100, "any");
+    const mapped = orders.map((o: any) => {
+      const { status, cjOrderId } = deriveOrderStatus(o);
+      return {
+        id: String(o.id),
+        orderNumber: o.order_number,
+        customerName: o.shipping_address
+          ? `${o.shipping_address.first_name ?? ""} ${o.shipping_address.last_name ?? ""}`.trim()
+          : (o.email ?? "Customer"),
+        total: o.total_price,
+        currency: o.currency ?? "USD",
+        createdAt: o.created_at,
+        itemCount: (o.line_items ?? []).reduce((n: number, li: any) => n + (li.quantity ?? 1), 0),
+        status,
+        cjOrderId,
+      };
+    }).sort((a: any, b: any) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+    return { connected: true as const, orders: mapped };
+  }),
+
+  // Manually kick the same 30-min engine early — shares its DB run-lock, so
+  // this can never race or double-place an order alongside the scheduler.
+  runNow: protectedProcedure.mutation(async () => {
+    try {
+      return await runAutoFulfillment();
+    } catch (err: any) {
+      console.error("[Fulfillment] Manual run failed:", err);
+      throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: err.message || "Fulfillment run failed." });
+    }
+  }),
+
+  getCjBalance: protectedProcedure.query(async () => {
+    const cjCred = await getSourcingAppCredential("cj");
+    const rawApiKey = cjCred?.apiKey ? decryptCredentials({ apiKey: cjCred.apiKey }).apiKey : null;
+    const cjEmail = cjCred?.apiSecret ?? null;
+    if (!rawApiKey || !cjEmail) return { connected: false as const, amount: null, frozen: null };
+    const token = await getCjAccessToken(cjEmail, rawApiKey);
+    if (!token) return { connected: true as const, amount: null, frozen: null, error: "CJ authentication failed — check your CJ credentials in Integrations." };
+    const balance = await getCjBalance(token);
+    if (!balance) return { connected: true as const, amount: null, frozen: null, error: "Balance check failed — CJ's API didn't return a usable response." };
+    return { connected: true as const, amount: balance.amount, frozen: balance.frozen, error: null };
+  }),
 });
 
 // ─── Ads Router ───────────────────────────────────────────────────────────────
@@ -3580,6 +3637,7 @@ export const appRouter = router({
   blog: blogRouter,
   sourcing: sourcingRouter,
   inventory: inventoryRouter,
+  fulfillment: fulfillmentRouter,
   ads: adsRouter,
   audit: auditRouter,
   analytics: analyticsRouter,

@@ -178,6 +178,35 @@ export async function getCjVariantStock(accessToken: string, vid: string): Promi
   return total;
 }
 
+/**
+ * CJ wallet balance — auto-fulfillment pays for every order straight out of
+ * this balance (payType: 2 in createCjOrder). If it runs dry, order
+ * placement starts failing with no warning unless something checks this
+ * proactively. Returns null on failure (unknown, not "empty" — never show a
+ * false low-balance alarm from a transient API error).
+ */
+export async function getCjBalance(accessToken: string): Promise<{ amount: number; frozen: number } | null> {
+  let res: Response;
+  try {
+    res = await fetch(`${CJ_BASE}/shopping/pay/getBalance`, { headers: { "CJ-Access-Token": accessToken } });
+  } catch (err) {
+    console.warn("[CJ] Balance check request failed:", err);
+    return null;
+  }
+  if (!res.ok) return null;
+  let data: { code: number; data?: any };
+  try {
+    data = await res.json();
+  } catch {
+    return null;
+  }
+  if (data.code !== 200 || !data.data) return null;
+  const amount = data.data.amount ?? data.data.balance ?? data.data.availableAmount;
+  const frozen = data.data.freezeAmount ?? data.data.frozenAmount ?? 0;
+  if (typeof amount !== "number") return null;
+  return { amount, frozen: typeof frozen === "number" ? frozen : 0 };
+}
+
 export type CjOrderInput = {
   orderNumber: string;
   shippingCustomerName: string;

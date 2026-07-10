@@ -5,7 +5,7 @@ import { cn } from "@/lib/utils";
 import {
   LayoutDashboard, ShoppingBag, Search, FileText, Package, BarChart3, Megaphone,
   Settings, Zap, ChevronRight, LogOut, Loader2, ShieldCheck, Bot, TrendingUp, DollarSign,
-  Link2, Mail, Plug, Activity,
+  Link2, Mail, Plug, Activity, Truck,
 } from "lucide-react";
 import { trpc } from "@/lib/trpc";
 
@@ -36,6 +36,7 @@ const navSections = [
     items: [
       { href: "/sourcing", label: "Sourcing", icon: Package },
       { href: "/inventory", label: "Inventory", icon: BarChart3 },
+      { href: "/fulfillment", label: "Fulfillment", icon: Truck },
     ],
   },
   {
