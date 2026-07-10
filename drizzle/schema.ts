@@ -189,7 +189,10 @@ export type SourcingAppCredential = typeof sourcingAppCredentials.$inferSelect;
 export const inventorySnapshots = mysqlTable("inventory_snapshots", {
   id: int("id").autoincrement().primaryKey(),
   shopifyProductId: varchar("shopifyProductId", { length: 128 }).notNull(),
-  shopifyVariantId: varchar("shopifyVariantId", { length: 128 }),
+  // Unique so repeat scans update the same row (upsert) instead of piling
+  // up a new row per variant every run — without this, the "grouped by
+  // product" view would show the same variant duplicated once per scan.
+  shopifyVariantId: varchar("shopifyVariantId", { length: 128 }).unique(),
   title: varchar("title", { length: 512 }),
   sku: varchar("sku", { length: 255 }),
   supplierStock: int("supplierStock").default(0),

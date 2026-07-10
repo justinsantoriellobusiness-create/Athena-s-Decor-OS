@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { trpc } from "@/lib/trpc";
 import { toast } from "sonner";
-import { BarChart3, Loader2, RefreshCw, AlertTriangle, CheckCircle2, XCircle, Package, ToggleLeft, ToggleRight, Zap, ExternalLink, EyeOff, Eye, Search } from "lucide-react";
+import { BarChart3, Loader2, RefreshCw, AlertTriangle, CheckCircle2, XCircle, Package, ToggleLeft, ToggleRight, Zap, ExternalLink, EyeOff, Eye, Search, ChevronDown, ChevronUp, ShieldCheck, ShieldAlert } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -14,16 +14,121 @@ function StockBadge({ status }: { status: string }) {
   return <span className="badge-info">Unknown</span>;
 }
 
+function timeAgo(date: string | Date | null | undefined) {
+  if (!date) return null;
+  const d = new Date(date).getTime();
+  const diffMs = Date.now() - d;
+  const mins = Math.round(diffMs / 60000);
+  if (mins < 1) return "just now";
+  if (mins < 60) return `${mins}m ago`;
+  const hrs = Math.round(mins / 60);
+  if (hrs < 24) return `${hrs}h ago`;
+  return `${Math.round(hrs / 24)}d ago`;
+}
+
+function VariantRow({
+  variant,
+  onSet,
+  isPending,
+}: {
+  variant: any;
+  onSet: (quantity: number) => void;
+  isPending: boolean;
+}) {
+  const [value, setValue] = useState(String(variant.shopifyStock ?? 0));
+  const dirty = value !== String(variant.shopifyStock ?? 0);
+  const hasSupplierData = variant.supplierSource === "cj";
+  const supplierMismatch = hasSupplierData && variant.supplierStock === 0 && variant.shopifyStock > 0;
+
+  return (
+    <div className="border-t border-border/30 py-2 first:border-t-0">
+      <div className="flex items-center justify-between gap-2 flex-wrap">
+        <div className="min-w-0">
+          <p className="text-[11px] text-foreground/80 truncate max-w-[160px]" title={variant.title}>
+            {variant.title?.split(" - ").slice(1).join(" - ") || variant.title}
+          </p>
+          {variant.sku && <p className="text-[9px] text-muted-foreground/60">SKU {variant.sku}</p>}
+        </div>
+        <StockBadge status={variant.status} />
+      </div>
+
+      <div className="flex items-center gap-2 mt-1.5 flex-wrap text-[10px]">
+        <span className="text-muted-foreground">Shopify: <span className="text-foreground/80 font-medium">{variant.shopifyStock}</span></span>
+        {hasSupplierData ? (
+          <span className={cn("flex items-center gap-1", supplierMismatch ? "text-red-400" : "text-emerald-400")}>
+            {supplierMismatch ? <ShieldAlert className="w-3 h-3" /> : <ShieldCheck className="w-3 h-3" />}
+            CJ supplier: <span className="font-medium">{variant.supplierStock}</span>
+          </span>
+        ) : (
+          <span className="text-muted-foreground/50">Not CJ-mapped — Shopify count only</span>
+        )}
+      </div>
+      {supplierMismatch && (
+        <p className="text-[9px] text-red-400/80 mt-0.5">Supplier is actually out of stock — hidden automatically even though Shopify still showed it available.</p>
+      )}
+
+      <div className="flex items-center gap-1.5 mt-2">
+        <Input
+          type="number"
+          min={0}
+          value={value}
+          onChange={(e) => setValue(e.target.value)}
+          className="h-7 text-[10px] w-20 bg-secondary/50 border-border/50"
+          disabled={isPending}
+        />
+        <Button
+          size="sm"
+          variant="outline"
+          className="h-7 px-2 text-[10px]"
+          disabled={isPending || !dirty || value === ""}
+          onClick={() => onSet(Math.max(0, parseInt(value, 10) || 0))}
+        >
+          {isPending ? <Loader2 className="w-3 h-3 animate-spin" /> : "Set"}
+        </Button>
+        <Button
+          size="sm"
+          variant="outline"
+          className="h-7 px-2 text-[10px] border-red-500/30 text-red-400 hover:bg-red-500/10"
+          disabled={isPending || variant.shopifyStock === 0}
+          onClick={() => { setValue("0"); onSet(0); }}
+          title="Set this variant's Shopify inventory to 0"
+        >
+          0
+        </Button>
+      </div>
+    </div>
+  );
+}
+
 export default function InventoryPage() {
   const [filter, setFilter] = useState<"all" | "in_stock" | "low_stock" | "out_of_stock">("all");
   const [search, setSearch] = useState("");
+  const [expanded, setExpanded] = useState<Set<string>>(new Set());
+  const [lastScan, setLastScan] = useState<{
+    scanned: number; outOfStockCount: number; supplierOutOfStockCount: number;
+    cjChecked: number; cjUnavailable: number; draftFailures: number; at: Date;
+  } | null>(null);
   const utils = trpc.useUtils();
 
   const { data: groups, isLoading } = trpc.inventory.getGrouped.useQuery();
   const { data: shopifyConfig } = trpc.shopify.getConfig.useQuery();
 
   const scanMutation = trpc.inventory.scan.useMutation({
-    onSuccess: (data) => { toast.success(`Scanned ${data.scanned} products — ${data.outOfStockCount} out of stock`); utils.inventory.getGrouped.invalidate(); },
+    onSuccess: (data) => {
+      setLastScan({
+        scanned: data.scanned, outOfStockCount: data.outOfStockCount,
+        supplierOutOfStockCount: data.supplierOutOfStockCount, cjChecked: data.cjChecked,
+        cjUnavailable: data.cjUnavailable, draftFailures: data.draftFailures, at: new Date(),
+      });
+      toast.success(
+        data.supplierOutOfStockCount > 0
+          ? `Scanned ${data.scanned} — ${data.outOfStockCount} out of stock (${data.supplierOutOfStockCount} caught by real CJ supplier stock)`
+          : `Scanned ${data.scanned} products — ${data.outOfStockCount} out of stock`
+      );
+      if (data.draftFailures > 0) toast.error(`${data.draftFailures} out-of-stock product(s) failed to auto-hide — check Activity Feed`);
+      utils.inventory.getGrouped.invalidate();
+      utils.scheduler.getAll.invalidate();
+    },
     onError: (err) => toast.error(err.message),
   });
   const markOutMutation = trpc.inventory.markOutOfStock.useMutation({
@@ -32,6 +137,13 @@ export default function InventoryPage() {
   });
   const republishMutation = trpc.inventory.republish.useMutation({
     onSuccess: () => { toast.success("Product republished (marked active) in Shopify"); utils.inventory.getGrouped.invalidate(); },
+    onError: (err) => toast.error(err.message),
+  });
+  const setStockMutation = trpc.inventory.setStock.useMutation({
+    onSuccess: (data) => {
+      toast.success(`Stock set to ${data.quantity} — now ${data.status.replace(/_/g, " ")}`);
+      utils.inventory.getGrouped.invalidate();
+    },
     onError: (err) => toast.error(err.message),
   });
 
@@ -54,12 +166,20 @@ export default function InventoryPage() {
   const shopifyAdminUrl = (productId: string) =>
     shopifyConfig?.storeDomain ? `https://${shopifyConfig.storeDomain}/admin/products/${productId}` : undefined;
 
+  const toggleExpanded = (id: string) => {
+    setExpanded((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  };
+
   return (
     <div className="p-6 lg:p-8 space-y-6">
       <div className="flex items-start justify-between gap-4 flex-wrap">
         <div>
           <h1 className="text-2xl font-bold text-white tracking-tight">Inventory Tracker</h1>
-          <p className="text-white/40 text-sm mt-1">Live Shopify stock, product images, and manual show/hide controls</p>
+          <p className="text-white/40 text-sm mt-1">Live Shopify stock, real CJ supplier stock, product images, and full manual controls</p>
         </div>
         <div className="flex items-center gap-3">
           {invSetting && (
@@ -83,10 +203,53 @@ export default function InventoryPage() {
             className="gap-2 font-semibold bg-emerald-600 hover:bg-emerald-500 text-white"
           >
             {scanMutation.isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : <RefreshCw className="w-4 h-4" />}
-            Scan Now
+            {scanMutation.isPending ? "Scanning…" : "Scan Now"}
           </Button>
         </div>
       </div>
+
+      {/* Scan-in-progress proof bar */}
+      {scanMutation.isPending && (
+        <div className="glass rounded-xl p-4 border border-emerald-500/20 flex items-center gap-3">
+          <Loader2 className="w-4 h-4 text-emerald-400 animate-spin flex-shrink-0" />
+          <div className="flex-1">
+            <p className="text-xs text-foreground font-medium">Scanning Shopify catalog and checking real CJ supplier stock…</p>
+            <div className="h-1.5 w-full bg-secondary/50 rounded-full overflow-hidden mt-1.5">
+              <div className="h-full w-1/3 bg-emerald-500 rounded-full animate-[loading-bar_1.2s_ease-in-out_infinite]" />
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Proof of last scan */}
+      {lastScan && !scanMutation.isPending && (
+        <div className="glass rounded-xl p-4 border border-border/30 flex items-start gap-3 text-xs">
+          <CheckCircle2 className="w-4 h-4 text-emerald-400 flex-shrink-0 mt-0.5" />
+          <div className="space-y-0.5">
+            <p className="text-foreground font-medium">
+              Last scan {timeAgo(lastScan.at)}: {lastScan.scanned} products checked, {lastScan.outOfStockCount} out of stock.
+            </p>
+            <p className="text-muted-foreground">
+              {lastScan.cjChecked > 0
+                ? `Real CJ supplier stock verified on ${lastScan.cjChecked} variant(s)${lastScan.cjUnavailable ? `, ${lastScan.cjUnavailable} check(s) failed (fell back to Shopify's count)` : ""}.`
+                : "No verified CJ-sourced products found to check — only Shopify's own stock count was used."}
+              {lastScan.supplierOutOfStockCount > 0 && (
+                <span className="text-red-400"> {lastScan.supplierOutOfStockCount} product(s) hidden because the real supplier was out even though Shopify still showed available.</span>
+              )}
+              {lastScan.draftFailures > 0 && <span className="text-red-400"> {lastScan.draftFailures} product(s) failed to auto-hide — check manually.</span>}
+            </p>
+          </div>
+        </div>
+      )}
+      {!lastScan && invSetting?.lastRunAt && (
+        <div className="glass rounded-xl p-4 border border-border/30 flex items-start gap-3 text-xs">
+          <BarChart3 className="w-4 h-4 text-muted-foreground flex-shrink-0 mt-0.5" />
+          <div>
+            <p className="text-foreground font-medium">Last automated run: {timeAgo(invSetting.lastRunAt)} ({invSetting.lastRunStatus})</p>
+            {invSetting.lastRunMessage && <p className="text-muted-foreground">{invSetting.lastRunMessage}</p>}
+          </div>
+        </div>
+      )}
 
       {/* Stats */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
@@ -135,56 +298,98 @@ export default function InventoryPage() {
         </div>
       ) : filtered.length ? (
         <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
-          {filtered.map((group: any) => (
-            <div key={group.shopifyProductId} className="glass rounded-xl overflow-hidden border border-border/30">
-              {group.imageUrl ? (
-                <div className="aspect-square bg-secondary/50 overflow-hidden">
-                  <img src={group.imageUrl} alt={group.title} className="w-full h-full object-cover" onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }} />
-                </div>
-              ) : (
-                <div className="aspect-square bg-secondary/50 flex items-center justify-center">
-                  <Package className="w-8 h-8 text-muted-foreground/30" />
-                </div>
-              )}
-              <div className="p-3 space-y-2">
-                <p className="text-xs font-medium text-foreground line-clamp-2 leading-snug min-h-[2rem]">{group.title}</p>
-                <div className="flex items-center justify-between">
-                  <StockBadge status={group.status} />
-                  <span className="text-[10px] text-muted-foreground">{group.totalStock} units</span>
-                </div>
-                {group.variants.length > 1 && (
-                  <p className="text-[10px] text-muted-foreground/60">{group.variants.length} variants</p>
+          {filtered.map((group: any) => {
+            const isExpanded = expanded.has(group.shopifyProductId);
+            const hasSupplierMismatch = group.variants.some((v: any) => v.supplierSource === "cj" && v.supplierStock === 0 && v.shopifyStock > 0);
+            return (
+              <div key={group.shopifyProductId} className="glass rounded-xl overflow-hidden border border-border/30">
+                {group.imageUrl ? (
+                  <div className="aspect-square bg-secondary/50 overflow-hidden">
+                    <img src={group.imageUrl} alt={group.title} className="w-full h-full object-cover" onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }} />
+                  </div>
+                ) : (
+                  <div className="aspect-square bg-secondary/50 flex items-center justify-center">
+                    <Package className="w-8 h-8 text-muted-foreground/30" />
+                  </div>
                 )}
-                <div className="flex items-center gap-1.5 pt-1">
-                  {group.status === "out_of_stock" ? (
-                    <Button size="sm" variant="outline"
-                      className="flex-1 text-[10px] h-7 px-2 border-emerald-500/30 text-emerald-400 hover:bg-emerald-500/10"
-                      onClick={() => republishMutation.mutate({ shopifyProductId: group.shopifyProductId })}
-                      disabled={republishMutation.isPending}>
-                      <Eye className="w-3 h-3 mr-1" />Republish
-                    </Button>
-                  ) : (
-                    <Button size="sm" variant="outline"
-                      className="flex-1 text-[10px] h-7 px-2 border-red-500/30 text-red-400 hover:bg-red-500/10"
-                      onClick={() => markOutMutation.mutate({ shopifyProductId: group.shopifyProductId })}
-                      disabled={markOutMutation.isPending}>
-                      <EyeOff className="w-3 h-3 mr-1" />Hide
-                    </Button>
+                <div className="p-3 space-y-2">
+                  <p className="text-xs font-medium text-foreground line-clamp-2 leading-snug min-h-[2rem]">{group.title}</p>
+                  <div className="flex items-center justify-between">
+                    <StockBadge status={group.status} />
+                    <span className="text-[10px] text-muted-foreground">{group.totalStock} units</span>
+                  </div>
+                  {hasSupplierMismatch && (
+                    <div className="flex items-center gap-1 text-[9px] text-red-400 bg-red-500/10 rounded px-1.5 py-1">
+                      <ShieldAlert className="w-3 h-3 flex-shrink-0" />
+                      Supplier out of stock
+                    </div>
                   )}
-                  {shopifyAdminUrl(group.shopifyProductId) && (
-                    <a href={shopifyAdminUrl(group.shopifyProductId)} target="_blank" rel="noopener noreferrer"
-                      className="flex items-center justify-center h-7 w-7 rounded-md border border-border/50 text-muted-foreground hover:text-foreground hover:bg-secondary/50 transition-colors flex-shrink-0"
-                      title="Open in Shopify Admin">
-                      <ExternalLink className="w-3 h-3" />
-                    </a>
+                  {group.variants.length > 1 && (
+                    <button
+                      onClick={() => toggleExpanded(group.shopifyProductId)}
+                      className="flex items-center gap-1 text-[10px] text-muted-foreground hover:text-foreground transition-colors"
+                    >
+                      {isExpanded ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />}
+                      {group.variants.length} variants
+                    </button>
+                  )}
+                  {group.variants.length === 1 && (
+                    <button
+                      onClick={() => toggleExpanded(group.shopifyProductId)}
+                      className="flex items-center gap-1 text-[10px] text-muted-foreground hover:text-foreground transition-colors"
+                    >
+                      {isExpanded ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />}
+                      Edit stock
+                    </button>
+                  )}
+                  <div className="flex items-center gap-1.5 pt-1">
+                    {group.status === "out_of_stock" ? (
+                      <Button size="sm" variant="outline"
+                        className="flex-1 text-[10px] h-7 px-2 border-emerald-500/30 text-emerald-400 hover:bg-emerald-500/10"
+                        onClick={() => republishMutation.mutate({ shopifyProductId: group.shopifyProductId })}
+                        disabled={republishMutation.isPending}>
+                        {republishMutation.isPending && republishMutation.variables?.shopifyProductId === group.shopifyProductId
+                          ? <Loader2 className="w-3 h-3 mr-1 animate-spin" /> : <Eye className="w-3 h-3 mr-1" />}
+                        Republish
+                      </Button>
+                    ) : (
+                      <Button size="sm" variant="outline"
+                        className="flex-1 text-[10px] h-7 px-2 border-red-500/30 text-red-400 hover:bg-red-500/10"
+                        onClick={() => markOutMutation.mutate({ shopifyProductId: group.shopifyProductId })}
+                        disabled={markOutMutation.isPending}>
+                        {markOutMutation.isPending && markOutMutation.variables?.shopifyProductId === group.shopifyProductId
+                          ? <Loader2 className="w-3 h-3 mr-1 animate-spin" /> : <EyeOff className="w-3 h-3 mr-1" />}
+                        Hide
+                      </Button>
+                    )}
+                    {shopifyAdminUrl(group.shopifyProductId) && (
+                      <a href={shopifyAdminUrl(group.shopifyProductId)} target="_blank" rel="noopener noreferrer"
+                        className="flex items-center justify-center h-7 w-7 rounded-md border border-border/50 text-muted-foreground hover:text-foreground hover:bg-secondary/50 transition-colors flex-shrink-0"
+                        title="Open in Shopify Admin">
+                        <ExternalLink className="w-3 h-3" />
+                      </a>
+                    )}
+                  </div>
+                  {group.lastCheckedAt && (
+                    <p className="text-[9px] text-muted-foreground/50">Checked {timeAgo(group.lastCheckedAt)}</p>
+                  )}
+
+                  {isExpanded && (
+                    <div className="pt-1">
+                      {group.variants.map((variant: any) => (
+                        <VariantRow
+                          key={variant.shopifyVariantId}
+                          variant={variant}
+                          isPending={setStockMutation.isPending && setStockMutation.variables?.shopifyVariantId === variant.shopifyVariantId}
+                          onSet={(quantity) => setStockMutation.mutate({ shopifyVariantId: variant.shopifyVariantId, quantity })}
+                        />
+                      ))}
+                    </div>
                   )}
                 </div>
-                {group.lastCheckedAt && (
-                  <p className="text-[9px] text-muted-foreground/50">Checked {new Date(group.lastCheckedAt).toLocaleString()}</p>
-                )}
               </div>
-            </div>
-          ))}
+            );
+          })}
         </div>
       ) : (
         <div className="glass rounded-xl p-12 text-center">

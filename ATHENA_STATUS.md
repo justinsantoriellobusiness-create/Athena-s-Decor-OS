@@ -37,9 +37,13 @@ Anthropic Claude for all LLM calls.
   `logActivity({ module, level, title, detail })` in `server/db.ts` — this
   is the "proof it's working" surface. Check it before believing anything
   ran successfully.
-- **Inventory page**: product images, grouped by product, Republish
-  control (undo an auto-hidden out-of-stock product), direct link to
-  Shopify Admin per product.
+- **Inventory page**: product images, grouped by product with expandable
+  variant rows, real CJ supplier stock shown alongside Shopify's own count
+  (for verified CJ-sourced products), Republish/Hide controls, a per-variant
+  "Set Stock" control that writes directly to Shopify's inventory (same as
+  Shopify admin — no separate app needed), a live scan progress bar, and a
+  post-scan summary showing exactly what was scanned/hidden/why. Direct link
+  to Shopify Admin per product.
 - **Sourcing page**: every scraped product tagged Verified (real live CJ
   listing) or AI idea (no live match — DSers/AliExpress have no public
   search API, so those are always AI-generated research ideas, never
@@ -57,15 +61,42 @@ on a broken schema, and more). Everything is on `main`, passes
 `npx tsc --noEmit` with 0 errors and `npm run build` cleanly.
 
 ## Known gaps / next candidates (not yet built)
-1. **No real supplier-stock sync** — CJ/DSers stock isn't checked before
-   Shopify shows a product as purchasable; `inventorySnapshots.supplierStock`
-   is currently just a copy of Shopify's own stock number. A customer could
-   order something the supplier is actually out of. This is the single
-   highest-value next fix for fulfillment reliability.
+1. **Real supplier-stock sync — CJ only, not yet verified live.** Inventory
+   scans now call CJ's `product/stock/queryByVid` for any product mapped to
+   a verified CJ listing (`sourced_products.source === "cj" && isVerified`)
+   and use that as the real `supplierStock`, overriding Shopify's own stock
+   number when the supplier is at 0 (auto-hides the product even if Shopify
+   still shows it purchasable). **This has not been confirmed against a live
+   CJ account** — the exact response field names were pieced together from
+   CJ's docs/community reports (their doc site 403s automated fetches), so
+   the code defensively checks several possible field names and treats any
+   failure as "unknown" (falls back to Shopify's own count) rather than a
+   false "confirmed zero," to avoid wrongly hiding in-stock products. After
+   deploy, run "Scan Now" on Inventory and check the Activity Feed entry —
+   it states plainly how many variants were checked via live CJ stock
+   (`cjChecked`) vs. how many CJ mapping checks failed (`cjUnavailable`). If
+   `cjChecked` stays 0 forever despite verified CJ products existing, the
+   endpoint/field names need revisiting.
+   DSers has no public stock-check API, so DSers-sourced products still only
+   use Shopify's own count (unchanged).
 2. No automated test coverage for fulfillment/CJ/audit-fix logic beyond
    TypeScript type-checking.
 3. Ads platform posting not built (by design, pending dev tokens).
 4. eBay integration pending real credentials.
+
+## Bugs fixed this round
+- `inventory_snapshots` had no unique constraint on `shopifyVariantId`, so
+  `upsertInventorySnapshot`'s `onDuplicateKeyUpdate` never actually fired —
+  every scan (scheduled, manual, or the AI-assistant `scan_inventory` /
+  `inventory` autonomous actions) inserted a brand-new row per variant
+  instead of updating the existing one. Migration `0017` dedupes existing
+  rows (keeps the newest per variant) and adds the missing unique
+  constraint; `upsertInventorySnapshot` now also refreshes all fields
+  (image, supplier source, etc.) on conflict, not just a handful. The two
+  other inline copies of the scan loop (AI assistant dispatcher) were
+  replaced with calls to the shared `runInventoryScan()` so all three scan
+  entry points stay in sync and none of them silently overwrite real CJ
+  supplier data with a stripped-down Shopify-only write.
 
 ## How to work in this repo (for any future chat/agent)
 - Check out `main` locally and edit with local file tools; only use the
