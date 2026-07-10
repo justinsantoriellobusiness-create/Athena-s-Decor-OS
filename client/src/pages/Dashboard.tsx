@@ -12,7 +12,7 @@ import { cn } from "@/lib/utils";
 
 const moduleCards = [
   { key: "shopify", label: "Shopify", icon: ShoppingBag, href: "/shopify", color: "oklch(0.65 0.18 145)" },
-  { key: "fulfillment", label: "Fulfillment", icon: Truck, href: "/scheduler", color: "oklch(0.7 0.17 160)" },
+  { key: "fulfillment", label: "Fulfillment", icon: Truck, href: "/fulfillment", color: "oklch(0.7 0.17 160)" },
   { key: "seo", label: "SEO", icon: Search, href: "/seo", color: "oklch(0.65 0.18 240)" },
   { key: "blog", label: "Blog", icon: FileText, href: "/blog", color: "oklch(0.78 0.15 65)" },
   { key: "sourcing", label: "Sourcing", icon: Package, href: "/sourcing", color: "oklch(0.72 0.18 300)" },

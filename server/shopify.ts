@@ -143,6 +143,10 @@ export class ShopifyClient {
     return this.request("POST", "/products.json", { product: data });
   }
 
+  async getVariant(variantId: string): Promise<{ variant: ShopifyVariant }> {
+    return this.request("GET", `/variants/${variantId}.json`);
+  }
+
   async setInventoryLevel(inventoryItemId: string, locationId: string, available: number): Promise<unknown> {
     return this.request("POST", "/inventory_levels/set.json", {
       inventory_item_id: inventoryItemId,

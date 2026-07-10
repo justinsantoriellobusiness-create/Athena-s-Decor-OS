@@ -43,7 +43,8 @@ import {
   getSourcingAppCredential,
   upsertSourcingAppCredential,
   getInventorySnapshots,
-  upsertInventorySnapshot,
+  getInventorySnapshotByVariant,
+  setInventorySnapshotShopifyStock,
   getAdCampaigns,
   createAdCampaign,
   updateAdCampaign,
@@ -108,7 +109,9 @@ import {
   getInventoryGroupedByProduct,
   logActivity,
 } from "./db";
-import { runInventoryScan } from "./inventoryRunner";
+import { runInventoryScan, computeStatus } from "./inventoryRunner";
+import { runAutoFulfillment, deriveOrderStatus } from "./fulfillmentRunner";
+import { getCjAccessToken, getCjBalance } from "./_core/cjDropshipping";
 import { getShopifyClient } from "./shopify";
 import { getConnectedShopifyClient } from "./shopifyHelper";
 import { decryptCredential } from "./crypto";
@@ -1184,7 +1187,7 @@ const inventoryRouter = router({
     if (!config?.isConnected) throw new TRPCError({ code: "BAD_REQUEST", message: "Shopify not connected" });
     try {
       const result = await runInventoryScan();
-      return { success: true, scanned: result.scanned, outOfStockCount: result.outOfStockCount };
+      return { success: true, ...result };
     } catch (err: any) {
       console.error("[Inventory] Scan failed:", err);
       throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: err.message || "Inventory scan failed." });
@@ -1225,6 +1228,102 @@ const inventoryRouter = router({
         throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: err.message || "Failed to republish the product in Shopify." });
       }
     }),
+
+  // Directly set a variant's real Shopify inventory count — the same
+  // control Shopify's own admin gives you, so quantities can be corrected
+  // here without switching apps. Setting it to 0 is "mark out of stock"
+  // without hiding the whole product (unlike markOutOfStock, which drafts
+  // the entire product).
+  setStock: protectedProcedure
+    .input(z.object({ shopifyVariantId: z.string(), quantity: z.number().int().min(0).max(1_000_000) }))
+    .mutation(async ({ input }) => {
+      const config = await getShopifyConfig();
+      if (!config?.isConnected) throw new TRPCError({ code: "BAD_REQUEST", message: "Shopify not connected" });
+      try {
+        const client = await getShopifyClient(config.storeDomain, decryptCredential(config.accessToken) ?? config.accessToken);
+        const { variant } = await client.getVariant(input.shopifyVariantId);
+        if (!variant.inventory_item_id) {
+          throw new TRPCError({ code: "BAD_REQUEST", message: "This variant isn't tracked by Shopify inventory (no inventory_item_id) — quantity can't be set here." });
+        }
+        const { locations } = await client.getLocations();
+        const location = locations[0];
+        if (!location) throw new TRPCError({ code: "BAD_REQUEST", message: "No Shopify location found to set inventory at." });
+
+        await client.setInventoryLevel(variant.inventory_item_id, location.id, input.quantity);
+
+        const existing = await getInventorySnapshotByVariant(input.shopifyVariantId);
+        const supplierStock = existing?.supplierSource === "cj" ? existing.supplierStock ?? null : null;
+        const status = computeStatus(input.quantity, supplierStock);
+        await setInventorySnapshotShopifyStock(input.shopifyVariantId, input.quantity, status);
+
+        await logActivity({
+          module: "inventory",
+          level: "info",
+          title: `Manually set stock to ${input.quantity}`,
+          detail: `${existing?.title ?? `Variant ${input.shopifyVariantId}`} — new status: ${status}`,
+        });
+        return { success: true, quantity: input.quantity, status };
+      } catch (err: any) {
+        console.error("[Inventory] setStock failed:", err);
+        if (err instanceof TRPCError) throw err;
+        throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: err.message || "Failed to set inventory quantity in Shopify." });
+      }
+    }),
+});
+
+// ─── Fulfillment Router ────────────────────────────────────────────────────────
+// Gives the auto-fulfillment engine (real CJ orders, real money) the same
+// kind of visible surface Inventory has: an order list with real state
+// (derived from the exact tags the engine itself writes), a manual trigger,
+// and the CJ wallet balance it spends from — previously the only way to see
+// any of this was scrolling the Activity Feed.
+const fulfillmentRouter = router({
+  getOrders: protectedProcedure.query(async () => {
+    const config = await getShopifyConfig();
+    if (!config?.isConnected) return { connected: false as const, orders: [] };
+    const client = await getShopifyClient(config.storeDomain, decryptCredential(config.accessToken) ?? config.accessToken);
+    const { orders } = await client.getOrders(100, "any");
+    const mapped = orders.map((o: any) => {
+      const { status, cjOrderId } = deriveOrderStatus(o);
+      return {
+        id: String(o.id),
+        orderNumber: o.order_number,
+        customerName: o.shipping_address
+          ? `${o.shipping_address.first_name ?? ""} ${o.shipping_address.last_name ?? ""}`.trim()
+          : (o.email ?? "Customer"),
+        total: o.total_price,
+        currency: o.currency ?? "USD",
+        createdAt: o.created_at,
+        itemCount: (o.line_items ?? []).reduce((n: number, li: any) => n + (li.quantity ?? 1), 0),
+        status,
+        cjOrderId,
+      };
+    }).sort((a: any, b: any) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+    return { connected: true as const, orders: mapped };
+  }),
+
+  // Manually kick the same 30-min engine early — shares its DB run-lock, so
+  // this can never race or double-place an order alongside the scheduler.
+  runNow: protectedProcedure.mutation(async () => {
+    try {
+      return await runAutoFulfillment();
+    } catch (err: any) {
+      console.error("[Fulfillment] Manual run failed:", err);
+      throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: err.message || "Fulfillment run failed." });
+    }
+  }),
+
+  getCjBalance: protectedProcedure.query(async () => {
+    const cjCred = await getSourcingAppCredential("cj");
+    const rawApiKey = cjCred?.apiKey ? decryptCredentials({ apiKey: cjCred.apiKey }).apiKey : null;
+    const cjEmail = cjCred?.apiSecret ?? null;
+    if (!rawApiKey || !cjEmail) return { connected: false as const, amount: null, frozen: null };
+    const token = await getCjAccessToken(cjEmail, rawApiKey);
+    if (!token) return { connected: true as const, amount: null, frozen: null, error: "CJ authentication failed — check your CJ credentials in Integrations." };
+    const balance = await getCjBalance(token);
+    if (!balance) return { connected: true as const, amount: null, frozen: null, error: "Balance check failed — CJ's API didn't return a usable response." };
+    return { connected: true as const, amount: balance.amount, frozen: balance.frozen, error: null };
+  }),
 });
 
 // ─── Ads Router ───────────────────────────────────────────────────────────────
@@ -1731,19 +1830,8 @@ Be concise, direct, and action-oriented. When the user asks you to do something,
         case "scan_inventory": {
           if (!config?.isConnected) return { success: false, message: "Shopify not connected" };
           try {
-            const client = await getShopifyClient(config.storeDomain, decryptCredential(config.accessToken) ?? config.accessToken);
-            const productsData = await client.getProducts(50);
-            let outOfStock = 0, lowStock = 0;
-            for (const product of productsData.products) {
-              for (const variant of product.variants) {
-                const shopifyStock = variant.inventory_quantity;
-                const status = shopifyStock === 0 ? "out_of_stock" : shopifyStock < 10 ? "low_stock" : "in_stock";
-                if (status === "out_of_stock") outOfStock++;
-                else if (status === "low_stock") lowStock++;
-                await upsertInventorySnapshot({ shopifyProductId: String(product.id), shopifyVariantId: String(variant.id), title: `${product.title} - ${variant.title}`, sku: variant.sku, supplierStock: shopifyStock, shopifyStock, status, autoUpdated: false, lastCheckedAt: new Date() });
-              }
-            }
-            return { success: true, message: `Inventory scan complete: ${outOfStock} out of stock, ${lowStock} low stock. See the Inventory module.` };
+            const result = await runInventoryScan();
+            return { success: true, message: `Inventory scan complete: ${result.scanned} scanned, ${result.outOfStockCount} out of stock${result.supplierOutOfStockCount ? ` (${result.supplierOutOfStockCount} caught by real supplier stock, not just Shopify's own count)` : ""}. See the Inventory module.` };
           } catch (err: any) {
             return { success: false, message: `Inventory scan failed: ${err.message}` };
           }
@@ -3370,22 +3458,12 @@ const autonomousRouter = router({
         return { success: true, message: `Sourcing: found ${products.length} new best-match products.` };
       }
       if (input.module === "inventory") {
-        // Auto-sync inventory from Shopify and flag out-of-stock
+        // Auto-sync inventory from Shopify (and real CJ supplier stock where mapped) and flag out-of-stock
         const config = await getShopifyConfig();
         if (!config?.isConnected) return { success: false, message: "Shopify not connected." };
-        const { getShopifyClient } = await import("./shopify");
-        const { decryptCredential } = await import("./crypto");
-        const client = await getShopifyClient(config.storeDomain, decryptCredential(config.accessToken) ?? config.accessToken);
-        const productsData = await client.getProducts(50);
-        let synced = 0;
-        for (const product of productsData.products) {
-          for (const variant of product.variants) {
-            await upsertInventorySnapshot({ shopifyProductId: String(product.id), shopifyVariantId: String(variant.id), title: `${product.title} - ${variant.title}`, sku: variant.sku, supplierStock: variant.inventory_quantity, shopifyStock: variant.inventory_quantity, status: variant.inventory_quantity === 0 ? "out_of_stock" : variant.inventory_quantity < 10 ? "low_stock" : "in_stock", autoUpdated: true, lastCheckedAt: new Date(), imageUrl: product.images?.[0]?.src ?? null });
-            synced++;
-          }
-        }
+        const result = await runInventoryScan();
         await upsertAutonomousConfig(ctx.user.id, "inventory", { lastAutoRunAt: new Date() });
-        return { success: true, message: `Inventory synced: ${synced} variants updated.` };
+        return { success: true, message: `Inventory synced: ${result.scanned} variants checked, ${result.outOfStockCount} out of stock.` };
       }
       if (input.module === "ads") {
         // Auto-generate ad creative for top products
@@ -3559,6 +3637,7 @@ export const appRouter = router({
   blog: blogRouter,
   sourcing: sourcingRouter,
   inventory: inventoryRouter,
+  fulfillment: fulfillmentRouter,
   ads: adsRouter,
   audit: auditRouter,
   analytics: analyticsRouter,

@@ -11,6 +11,7 @@ import SeoPage from "./pages/SeoPage";
 import BlogPage from "./pages/BlogPage";
 import SourcingPage from "./pages/SourcingPage";
 import InventoryPage from "./pages/InventoryPage";
+import FulfillmentPage from "./pages/FulfillmentPage";
 import AdsPage from "./pages/AdsPage";
 import SchedulerPage from "./pages/SchedulerPage";
 import AnalyticsPage from "./pages/AnalyticsPage";
@@ -36,6 +37,7 @@ function Router() {
       <Route path="/blog" component={() => <AppLayout><BlogPage /></AppLayout>} />
       <Route path="/sourcing" component={() => <AppLayout><SourcingPage /></AppLayout>} />
       <Route path="/inventory" component={() => <AppLayout><InventoryPage /></AppLayout>} />
+      <Route path="/fulfillment" component={() => <AppLayout><FulfillmentPage /></AppLayout>} />
       <Route path="/ads" component={() => <AppLayout><AdsPage /></AppLayout>} />
       <Route path="/scheduler" component={() => <AppLayout><SchedulerPage /></AppLayout>} />
       <Route path="/analytics" component={() => <AppLayout><AnalyticsPage /></AppLayout>} />

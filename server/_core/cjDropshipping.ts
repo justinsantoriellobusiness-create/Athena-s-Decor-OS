@@ -138,6 +138,75 @@ export async function getCjProductVariants(accessToken: string, pid: string): Pr
   })).filter((v: CjVariant) => v.vid);
 }
 
+/**
+ * Real-time stock for a single CJ variant, summed across whichever
+ * warehouse/quantity fields CJ's response actually includes (their docs and
+ * live responses aren't fully consistent on field naming, so this checks
+ * several known aliases rather than trusting one).
+ * Returns null (not 0) on any failure — a failed check must never be
+ * mistaken for "confirmed zero stock," since that would wrongly hide a
+ * product that's actually available.
+ */
+export async function getCjVariantStock(accessToken: string, vid: string): Promise<number | null> {
+  const url = new URL(`${CJ_BASE}/product/stock/queryByVid`);
+  url.searchParams.set("vid", vid);
+  let res: Response;
+  try {
+    res = await fetch(url, { headers: { "CJ-Access-Token": accessToken } });
+  } catch (err) {
+    console.warn(`[CJ] Stock check request failed for vid ${vid}:`, err);
+    return null;
+  }
+  if (res.status === 401 || res.status === 403) return null;
+  if (!res.ok) return null;
+  let data: { code: number; data?: any[] };
+  try {
+    data = await res.json();
+  } catch {
+    return null;
+  }
+  if (data.code !== 200 || !Array.isArray(data.data)) return null;
+  if (data.data.length === 0) return 0; // no warehouse rows = nothing in stock
+
+  let total = 0;
+  for (const row of data.data) {
+    const rowStock =
+      row.totalInventoryNum ?? row.cjInventoryNum ?? row.storageNum ??
+      (Array.isArray(row.stock) ? row.stock.reduce((s: number, w: any) => s + (Number(w.inventory) || 0), 0) : undefined);
+    if (typeof rowStock === "number" && Number.isFinite(rowStock)) total += rowStock;
+  }
+  return total;
+}
+
+/**
+ * CJ wallet balance — auto-fulfillment pays for every order straight out of
+ * this balance (payType: 2 in createCjOrder). If it runs dry, order
+ * placement starts failing with no warning unless something checks this
+ * proactively. Returns null on failure (unknown, not "empty" — never show a
+ * false low-balance alarm from a transient API error).
+ */
+export async function getCjBalance(accessToken: string): Promise<{ amount: number; frozen: number } | null> {
+  let res: Response;
+  try {
+    res = await fetch(`${CJ_BASE}/shopping/pay/getBalance`, { headers: { "CJ-Access-Token": accessToken } });
+  } catch (err) {
+    console.warn("[CJ] Balance check request failed:", err);
+    return null;
+  }
+  if (!res.ok) return null;
+  let data: { code: number; data?: any };
+  try {
+    data = await res.json();
+  } catch {
+    return null;
+  }
+  if (data.code !== 200 || !data.data) return null;
+  const amount = data.data.amount ?? data.data.balance ?? data.data.availableAmount;
+  const frozen = data.data.freezeAmount ?? data.data.frozenAmount ?? 0;
+  if (typeof amount !== "number") return null;
+  return { amount, frozen: typeof frozen === "number" ? frozen : 0 };
+}
+
 export type CjOrderInput = {
   orderNumber: string;
   shippingCustomerName: string;

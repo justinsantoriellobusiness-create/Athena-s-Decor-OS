@@ -323,14 +323,42 @@ export async function upsertInventorySnapshot(data: typeof inventorySnapshots.$i
   if (!db) return;
   await db.insert(inventorySnapshots).values(data).onDuplicateKeyUpdate({
     set: {
+      title: data.title,
+      sku: data.sku,
       supplierStock: data.supplierStock,
       shopifyStock: data.shopifyStock,
       status: data.status,
       autoUpdated: data.autoUpdated,
       lastCheckedAt: data.lastCheckedAt,
+      imageUrl: data.imageUrl,
+      supplierName: data.supplierName,
+      supplierSource: data.supplierSource,
+      supplierProductId: data.supplierProductId,
+      supplierPrice: data.supplierPrice,
       updatedAt: new Date(),
     },
   });
+}
+
+/** Look up a single snapshot row by its Shopify variant ID (used by the manual set-quantity control). */
+export async function getInventorySnapshotByVariant(shopifyVariantId: string): Promise<InventorySnapshot | undefined> {
+  const db = await getDb();
+  if (!db) return undefined;
+  const rows = await db.select().from(inventorySnapshots).where(eq(inventorySnapshots.shopifyVariantId, shopifyVariantId)).limit(1);
+  return rows[0];
+}
+
+/** Record a manual stock change (Shopify side only — supplier fields are left as last-scanned). */
+export async function setInventorySnapshotShopifyStock(
+  shopifyVariantId: string,
+  shopifyStock: number,
+  status: "in_stock" | "low_stock" | "out_of_stock",
+) {
+  const db = await getDb();
+  if (!db) return;
+  await db.update(inventorySnapshots)
+    .set({ shopifyStock, status, autoUpdated: false, lastCheckedAt: new Date(), updatedAt: new Date() })
+    .where(eq(inventorySnapshots.shopifyVariantId, shopifyVariantId));
 }
 
 // ─── Ad Campaigns ─────────────────────────────────────────────────────────────
@@ -470,6 +498,30 @@ export async function deleteFinancialAccount(id: number): Promise<void> {
   const db = await getDb();
   if (!db) return;
   await db.delete(financialAccounts).where(eq(financialAccounts.id, id));
+}
+
+/**
+ * Find (or silently create) the CJ Dropshipping expense account so real CJ
+ * order spend can be auto-recorded without requiring the user to set up an
+ * account in Accounting first.
+ */
+export async function getOrCreateCjExpenseAccount(): Promise<number | undefined> {
+  const db = await getDb();
+  if (!db) return undefined;
+  const existing = await db.select().from(financialAccounts)
+    .where(and(eq(financialAccounts.provider, "cj_dropshipping"), eq(financialAccounts.accountType, "expense")))
+    .limit(1);
+  if (existing[0]) return existing[0].id;
+  const result = await db.insert(financialAccounts).values({
+    name: "CJ Dropshipping",
+    provider: "cj_dropshipping",
+    accountType: "expense",
+    currency: "USD",
+    isConnected: true,
+    isActive: true,
+    notes: "Auto-created by the fulfillment engine to record real CJ order spend.",
+  });
+  return (result[0] as any).insertId;
 }
 
 // ─── Accounting: Transactions ─────────────────────────────────────────────────
