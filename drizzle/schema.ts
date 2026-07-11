@@ -195,6 +195,10 @@ export const inventorySnapshots = mysqlTable("inventory_snapshots", {
   shopifyVariantId: varchar("shopifyVariantId", { length: 128 }).unique(),
   title: varchar("title", { length: 512 }),
   sku: varchar("sku", { length: 255 }),
+  // Shopify product slug — lets the UI link straight to the live storefront
+  // page, not just the admin edit page (the numeric product id alone can't
+  // build a working storefront URL).
+  productHandle: varchar("productHandle", { length: 255 }),
   supplierStock: int("supplierStock").default(0),
   shopifyStock: int("shopifyStock").default(0),
   status: mysqlEnum("status", ["in_stock", "low_stock", "out_of_stock", "unknown"]).default("unknown").notNull(),

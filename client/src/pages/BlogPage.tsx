@@ -36,6 +36,9 @@ export default function BlogPage() {
     onSuccess: () => { toast.success("Blog post generated!"); utils.blog.list.invalidate(); setTopic(""); },
     onError: (err) => toast.error(err.message),
   });
+  const suggestTopicsMutation = trpc.blog.suggestTopics.useMutation({
+    onError: (err) => toast.error(err.message),
+  });
   const publishMutation = trpc.blog.publish.useMutation({
     onSuccess: () => { toast.success("Published to Shopify!"); utils.blog.list.invalidate(); },
     onError: (err) => toast.error(err.message),
@@ -83,9 +86,21 @@ export default function BlogPage() {
         </div>
         <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
           <div className="md:col-span-1">
-            <label className="text-xs text-muted-foreground mb-1.5 block">Topic / Title Idea</label>
+            <div className="flex items-center justify-between mb-1.5">
+              <label className="text-xs text-muted-foreground">Topic / Title Idea (optional)</label>
+              <button
+                type="button"
+                onClick={() => suggestTopicsMutation.mutate()}
+                disabled={suggestTopicsMutation.isPending}
+                className="text-[10px] text-violet-400 hover:text-violet-300 flex items-center gap-1 disabled:opacity-50"
+              >
+                {suggestTopicsMutation.isPending
+                  ? <><Loader2 className="w-2.5 h-2.5 animate-spin" />Thinking…</>
+                  : <><Sparkles className="w-2.5 h-2.5" />Suggest ideas</>}
+              </button>
+            </div>
             <Input
-              placeholder="e.g. 10 Ways to Style Your Living Room"
+              placeholder="Leave blank to let AI pick a topic"
               value={topic}
               onChange={(e) => setTopic(e.target.value)}
               className="bg-white/5 border-white/10 text-white text-sm"
@@ -114,15 +129,33 @@ export default function BlogPage() {
             </Select>
           </div>
         </div>
+        {suggestTopicsMutation.data && suggestTopicsMutation.data.topics.length > 0 && (
+          <div className="flex flex-wrap gap-1.5">
+            {suggestTopicsMutation.data.topics.map((t) => (
+              <button
+                key={t}
+                onClick={() => setTopic(t)}
+                className={cn(
+                  "text-[11px] px-2.5 py-1 rounded-full border transition-colors text-left",
+                  topic === t ? "bg-violet-600 border-violet-500 text-white" : "bg-white/5 border-white/10 text-white/60 hover:text-white hover:border-white/20"
+                )}
+              >
+                {t}
+              </button>
+            ))}
+          </div>
+        )}
         <Button
-          onClick={() => generateMutation.mutate({ topic, tone, wordCount })}
-          disabled={!topic || generateMutation.isPending}
+          onClick={() => generateMutation.mutate({ topic: topic || undefined, tone, wordCount })}
+          disabled={generateMutation.isPending}
           className="gap-2 bg-violet-600 hover:bg-violet-500"
         >
           {generateMutation.isPending ? (
             <><Loader2 className="w-4 h-4 animate-spin" />Generating post + image…</>
-          ) : (
+          ) : topic ? (
             <><Sparkles className="w-4 h-4" />Generate Post</>
+          ) : (
+            <><Sparkles className="w-4 h-4" />Generate Post (AI picks a topic)</>
           )}
         </Button>
       </div>

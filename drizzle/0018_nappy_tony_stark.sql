@@ -1,0 +1,1 @@
+ALTER TABLE `inventory_snapshots` ADD `productHandle` varchar(255);

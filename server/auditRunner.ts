@@ -60,9 +60,17 @@ export async function runFullAudit(): Promise<{ runId: number; issueCount: numbe
     ];
     const allIssues: any[] = [];
     let totalSeoScore = 0; let totalCroScore = 0;
+    let scoredPages = 0;
+    const pageFailures: string[] = [];
+    // Each page gets its own try/catch: previously a single malformed LLM
+    // response (bad JSON, a transient API error) threw out of the whole
+    // loop, which aborted the entire audit and discarded every issue found
+    // on every page audited before it — the run showed as "error" with
+    // nothing to show for it even if 19 of 20 pages had already succeeded.
     for (const page of pages) {
-      const prompt = page.type === "product"
-        ? `Audit this Shopify product page for SEO and CRO issues:
+      try {
+        const prompt = page.type === "product"
+          ? `Audit this Shopify product page for SEO and CRO issues:
 Title: ${page.title}
 Meta Title: ${page.metaTitle || "MISSING"}
 Meta Description: ${page.metaDescription || "MISSING"}
@@ -74,69 +82,81 @@ Return JSON with seoScore (0-100), croScore (0-100), and issues array.
 For each issue: issueType (snake_case), severity (critical|warning|info), title, description, suggestion, currentValue, suggestedValue.
 Prefer these auto-fixable issueType values when applicable: missing_meta_title, short_meta_title, long_meta_title, missing_meta_description, short_meta_description, long_meta_description, thin_content, poor_description, low_cro, weak_cta, missing_title, duplicate_title.
 Manual-only types (still report them): missing_alt, missing_h1, missing_schema, broken_link, slow_page.`
-        : `Audit this ${page.type} page for SEO and CRO issues. URL: ${page.url}. Title: ${page.title}.
+          : `Audit this ${page.type} page for SEO and CRO issues. URL: ${page.url}. Title: ${page.title}.
 Return JSON with seoScore (0-100), croScore (0-100), and issues array.
 For each issue: issueType (snake_case), severity (critical|warning|info), title, description, suggestion, currentValue, suggestedValue.`;
-      const response = await invokeLLM({
-        messages: [
-          { role: "system", content: "You are an expert SEO and CRO auditor for Shopify dropshipping stores. Return structured JSON only. Be specific and actionable." },
-          { role: "user", content: prompt },
-        ],
-        response_format: {
-          type: "json_schema",
-          json_schema: {
-            name: "page_audit",
-            strict: true,
-            schema: {
-              type: "object",
-              properties: {
-                seoScore: { type: "number" }, croScore: { type: "number" },
-                issues: {
-                  type: "array",
-                  items: {
-                    type: "object",
-                    properties: {
-                      issueType: { type: "string" }, severity: { type: "string" },
-                      title: { type: "string" }, description: { type: "string" },
-                      suggestion: { type: "string" }, currentValue: { type: "string" }, suggestedValue: { type: "string" },
+        const response = await invokeLLM({
+          messages: [
+            { role: "system", content: "You are an expert SEO and CRO auditor for Shopify dropshipping stores. Return structured JSON only. Be specific and actionable." },
+            { role: "user", content: prompt },
+          ],
+          response_format: {
+            type: "json_schema",
+            json_schema: {
+              name: "page_audit",
+              strict: true,
+              schema: {
+                type: "object",
+                properties: {
+                  seoScore: { type: "number" }, croScore: { type: "number" },
+                  issues: {
+                    type: "array",
+                    items: {
+                      type: "object",
+                      properties: {
+                        issueType: { type: "string" }, severity: { type: "string" },
+                        title: { type: "string" }, description: { type: "string" },
+                        suggestion: { type: "string" }, currentValue: { type: "string" }, suggestedValue: { type: "string" },
+                      },
+                      required: ["issueType", "severity", "title", "description", "suggestion", "currentValue", "suggestedValue"],
+                      additionalProperties: false,
                     },
-                    required: ["issueType", "severity", "title", "description", "suggestion", "currentValue", "suggestedValue"],
-                    additionalProperties: false,
                   },
                 },
+                required: ["seoScore", "croScore", "issues"],
+                additionalProperties: false,
               },
-              required: ["seoScore", "croScore", "issues"],
-              additionalProperties: false,
             },
           },
-        },
-      });
-      const raw = response.choices[0]?.message?.content;
-      const pageResult = JSON.parse(typeof raw === "string" ? raw : '{"seoScore":50,"croScore":50,"issues":[]}');
-      totalSeoScore += pageResult.seoScore ?? 50;
-      totalCroScore += pageResult.croScore ?? 50;
-      for (const issue of (pageResult.issues ?? [])) {
-        allIssues.push({
-          runId, pageType: page.type, pageId: page.id, pageTitle: page.title, pageUrl: page.url,
-          issueType: issue.issueType,
-          severity: issue.severity === "critical" ? "critical" : issue.severity === "warning" ? "warning" : "info",
-          title: issue.title, description: issue.description, suggestion: issue.suggestion,
-          currentValue: issue.currentValue, suggestedValue: issue.suggestedValue, status: "open",
         });
+        const raw = response.choices[0]?.message?.content;
+        const pageResult = JSON.parse(typeof raw === "string" ? raw : '{"seoScore":50,"croScore":50,"issues":[]}');
+        totalSeoScore += pageResult.seoScore ?? 50;
+        totalCroScore += pageResult.croScore ?? 50;
+        scoredPages++;
+        for (const issue of (pageResult.issues ?? [])) {
+          allIssues.push({
+            runId, pageType: page.type, pageId: page.id, pageTitle: page.title, pageUrl: page.url,
+            issueType: issue.issueType,
+            severity: issue.severity === "critical" ? "critical" : issue.severity === "warning" ? "warning" : "info",
+            title: issue.title, description: issue.description, suggestion: issue.suggestion,
+            currentValue: issue.currentValue, suggestedValue: issue.suggestedValue, status: "open",
+          });
+        }
+      } catch (pageErr: any) {
+        console.warn(`[Audit] Failed to audit ${page.type} "${page.title}":`, pageErr);
+        pageFailures.push(`${page.title || page.id} (${String(pageErr.message ?? pageErr).slice(0, 150)})`);
       }
       await sleep(300);
     }
-    const avgSeo = Math.round(totalSeoScore / pages.length);
-    const avgCro = Math.round(totalCroScore / pages.length);
+    if (scoredPages === 0) {
+      throw new Error(`All ${pages.length} page(s) failed to audit. First failure: ${pageFailures[0] ?? "unknown error"}`);
+    }
+    const avgSeo = Math.round(totalSeoScore / scoredPages);
+    const avgCro = Math.round(totalCroScore / scoredPages);
     const overallScore = Math.round((avgSeo + avgCro) / 2);
     const criticalCount = allIssues.filter((i) => i.severity === "critical").length;
     const warningCount = allIssues.filter((i) => i.severity === "warning").length;
     const infoCount = allIssues.filter((i) => i.severity === "info").length;
     if (allIssues.length > 0) await insertAuditIssues(allIssues);
+    const failureNote = pageFailures.length > 0
+      ? ` ${pageFailures.length} page(s) could not be audited: ${pageFailures.slice(0, 5).join("; ")}${pageFailures.length > 5 ? `, +${pageFailures.length - 5} more` : ""}.`
+      : "";
     await updateAuditRun(runId, {
       status: "completed", overallScore, seoScore: avgSeo, croScore: avgCro, technicalScore: avgSeo,
-      pageCount: pages.length, issueCount: allIssues.length, criticalCount, warningCount, infoCount,
-      summary: `Audited ${pages.length} pages. Found ${allIssues.length} issues (${criticalCount} critical, ${warningCount} warnings). Overall score: ${overallScore}/100.`,
+      pageCount: scoredPages, issueCount: allIssues.length, criticalCount, warningCount, infoCount,
+      summary: `Audited ${scoredPages}/${pages.length} pages. Found ${allIssues.length} issues (${criticalCount} critical, ${warningCount} warnings). Overall score: ${overallScore}/100.`,
+      errorMessage: failureNote || null,
       completedAt: new Date(),
     });
     return { runId, issueCount: allIssues.length, overallScore };

@@ -40,7 +40,6 @@ const STATUS_COLORS: Record<string, string> = {
 export default function EmailCampaignsPage() {
   const [activeTab, setActiveTab] = useState("analytics");
   const [createCampaignOpen, setCreateCampaignOpen] = useState(false);
-  const [scrapeDialogOpen, setScrapeDialogOpen] = useState(false);
   const [selectedCampaignId, setSelectedCampaignId] = useState<number | null>(null);
   const [sendDialogOpen, setSendDialogOpen] = useState(false);
 
@@ -104,7 +103,6 @@ export default function EmailCampaignsPage() {
   const scrapeProspects = trpc.emailCampaigns.scrapeProspects.useMutation({
     onSuccess: (data) => {
       toast.success(`Generated ${data.prospectsFound} AI prospect ideas modeled on ${scrapeForm.competitorDomain}'s likely customers`);
-      setScrapeDialogOpen(false);
       refetchProspects();
       refetchScrapJobs();
     },
@@ -166,9 +164,9 @@ export default function EmailCampaignsPage() {
           </p>
         </div>
         <div className="flex items-center gap-2">
-          <Button variant="outline" onClick={() => setScrapeDialogOpen(true)}>
+          <Button variant="outline" onClick={() => setActiveTab("scraper")}>
             <UserPlus className="h-4 w-4 mr-2" />
-            Scrape Prospects
+            AI Prospect Ideas
           </Button>
           <Button onClick={() => setCreateCampaignOpen(true)}>
             <Plus className="h-4 w-4 mr-2" />
@@ -750,59 +748,11 @@ export default function EmailCampaignsPage() {
         </DialogContent>
       </Dialog>
 
-      {/* Scrape Dialog */}
-      <Dialog open={scrapeDialogOpen} onOpenChange={setScrapeDialogOpen}>
-        <DialogContent className="sm:max-w-md">
-          <DialogHeader>
-            <DialogTitle>Scrape Prospects</DialogTitle>
-            <DialogDescription>Find potential customers from a competitor's audience.</DialogDescription>
-          </DialogHeader>
-          <div className="space-y-4 py-2">
-            <div className="space-y-2">
-              <Label>Competitor Domain</Label>
-              <Input
-                placeholder="competitor-store.com"
-                value={scrapeForm.competitorDomain}
-                onChange={e => setScrapeForm(f => ({ ...f, competitorDomain: e.target.value }))}
-              />
-            </div>
-            <div className="space-y-2">
-              <Label>Method</Label>
-              <Select value={scrapeForm.method} onValueChange={v => setScrapeForm(f => ({ ...f, method: v as any }))}>
-                <SelectTrigger><SelectValue /></SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="review_sites">Review Sites</SelectItem>
-                  <SelectItem value="social_followers">Social Followers</SelectItem>
-                  <SelectItem value="blog_comments">Blog Comments</SelectItem>
-                  <SelectItem value="forum_posts">Forum Posts</SelectItem>
-                  <SelectItem value="linkedin">LinkedIn</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
-            <div className="space-y-2">
-              <Label>Count</Label>
-              <Select value={String(scrapeForm.count)} onValueChange={v => setScrapeForm(f => ({ ...f, count: parseInt(v) }))}>
-                <SelectTrigger><SelectValue /></SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="10">10</SelectItem>
-                  <SelectItem value="25">25</SelectItem>
-                  <SelectItem value="50">50</SelectItem>
-                  <SelectItem value="100">100</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
-          </div>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setScrapeDialogOpen(false)}>Cancel</Button>
-            <Button
-              onClick={() => scrapeProspects.mutate(scrapeForm)}
-              disabled={!scrapeForm.competitorDomain || scrapeProspects.isPending}
-            >
-              {scrapeProspects.isPending ? "Scraping..." : "Scrape Prospects"}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+      {/* The old standalone "Scrape Prospects" dialog was removed — it
+          duplicated the AI Persona Ideas tab below but without that tab's
+          disclaimer that these are AI-invented profiles, not real scraped
+          people, which read as misleading. The header button now just
+          opens that tab instead. */}
 
       {/* Send Campaign Dialog */}
       <Dialog open={sendDialogOpen} onOpenChange={setSendDialogOpen}>

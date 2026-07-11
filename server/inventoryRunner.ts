@@ -120,6 +120,7 @@ export async function runInventoryScan(): Promise<InventoryScanResult> {
         shopifyVariantId: String(variant.id),
         title: `${product.title} - ${variant.title}`,
         sku: variant.sku,
+        productHandle: product.handle,
         supplierStock: supplierStock !== null ? supplierStock : shopifyStock,
         shopifyStock,
         status,
