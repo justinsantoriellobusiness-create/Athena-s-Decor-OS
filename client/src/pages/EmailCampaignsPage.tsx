@@ -17,7 +17,7 @@ import { toast } from "sonner";
 import {
   Mail, Plus, Send, Users, BarChart3, Search, Trash2, RefreshCw,
   Zap, Eye, MousePointer, XCircle, CheckCircle2, Clock, Settings2,
-  UserPlus, Globe, TrendingUp, AlertCircle
+  UserPlus, Globe, TrendingUp, AlertCircle, Image as ImageIcon, Check
 } from "lucide-react";
 
 const CAMPAIGN_TYPE_LABELS: Record<string, string> = {
@@ -42,6 +42,9 @@ export default function EmailCampaignsPage() {
   const [createCampaignOpen, setCreateCampaignOpen] = useState(false);
   const [selectedCampaignId, setSelectedCampaignId] = useState<number | null>(null);
   const [sendDialogOpen, setSendDialogOpen] = useState(false);
+  const [productPickerOpen, setProductPickerOpen] = useState(false);
+  const [productSearch, setProductSearch] = useState("");
+  const [selectedProductIds, setSelectedProductIds] = useState<Set<string>>(new Set());
 
   // Campaign form
   const [campaignForm, setCampaignForm] = useState({
@@ -55,6 +58,8 @@ export default function EmailCampaignsPage() {
     frequencyDays: 30,
     bodyHtml: "",
     bodyText: "",
+    abTestEnabled: false,
+    variantBSubject: "",
   });
 
   // Scrape form
@@ -70,13 +75,17 @@ export default function EmailCampaignsPage() {
     refetchInterval: query => (query.state.data?.campaigns.some(c => c.status === "sending") ? 3000 : false),
   });
   const { data: prospects, refetch: refetchProspects } = trpc.emailCampaigns.getProspects.useQuery({});
+  const { data: shopifyProductsData, isLoading: productsLoading } = trpc.shopify.getProducts.useQuery({ limit: 100 }, { enabled: productPickerOpen });
+  const { data: shopifyConfig } = trpc.shopify.getConfig.useQuery();
+  const shopifyProducts = shopifyProductsData?.products ?? [];
+  const filteredProducts = shopifyProducts.filter((p: any) => !productSearch || p.title.toLowerCase().includes(productSearch.toLowerCase()));
   const { data: scrapJobs, refetch: refetchScrapJobs } = trpc.emailCampaigns.getScrapJobs.useQuery();
 
   const createCampaign = trpc.emailCampaigns.createCampaign.useMutation({
     onSuccess: () => {
       toast.success("Campaign created!");
       setCreateCampaignOpen(false);
-      setCampaignForm({ name: "", subject: "", previewText: "", type: "promotional", fromName: "", fromEmail: "", automationEnabled: false, frequencyDays: 30, bodyHtml: "", bodyText: "" });
+      setCampaignForm({ name: "", subject: "", previewText: "", type: "promotional", fromName: "", fromEmail: "", automationEnabled: false, frequencyDays: 30, bodyHtml: "", bodyText: "", abTestEnabled: false, variantBSubject: "" });
       refetchAnalytics();
     },
     onError: (err) => toast.error(err.message),
@@ -346,6 +355,7 @@ export default function EmailCampaignsPage() {
                       </div>
                     ))}
                   </div>
+                  {c.abTestEnabled && c.status !== "draft" && <CampaignVariantStats campaignId={c.id} />}
                   <div className="flex items-center gap-2">
                     {c.status === "draft" && (
                       <Button
@@ -682,13 +692,33 @@ export default function EmailCampaignsPage() {
             </Button>
 
             <div className="space-y-2">
-              <Label>Subject Line</Label>
+              <Label>Subject Line{campaignForm.abTestEnabled ? " (Variant A)" : ""}</Label>
               <Input
                 placeholder="Your dream home is waiting..."
                 value={campaignForm.subject}
                 onChange={e => setCampaignForm(f => ({ ...f, subject: e.target.value }))}
               />
             </div>
+            <div className="flex items-center justify-between bg-secondary/30 rounded-lg px-3 py-2">
+              <div>
+                <div className="text-sm font-medium">A/B test the subject line</div>
+                <div className="text-xs text-muted-foreground">Randomly split recipients, track which subject gets more opens</div>
+              </div>
+              <Switch
+                checked={campaignForm.abTestEnabled}
+                onCheckedChange={v => setCampaignForm(f => ({ ...f, abTestEnabled: v }))}
+              />
+            </div>
+            {campaignForm.abTestEnabled && (
+              <div className="space-y-2">
+                <Label>Subject Line (Variant B)</Label>
+                <Input
+                  placeholder="A different angle on the same email..."
+                  value={campaignForm.variantBSubject}
+                  onChange={e => setCampaignForm(f => ({ ...f, variantBSubject: e.target.value }))}
+                />
+              </div>
+            )}
             <div className="space-y-2">
               <Label>Preview Text</Label>
               <Input
@@ -698,7 +728,12 @@ export default function EmailCampaignsPage() {
               />
             </div>
             <div className="space-y-2">
-              <Label>Email Body (HTML)</Label>
+              <div className="flex items-center justify-between">
+                <Label>Email Body (HTML)</Label>
+                <Button type="button" variant="outline" size="sm" className="h-7 text-xs" onClick={() => setProductPickerOpen(true)}>
+                  <ImageIcon className="h-3.5 w-3.5 mr-1.5" />Add Products
+                </Button>
+              </div>
               <Textarea
                 placeholder="<p>Your email content here...</p>"
                 className="font-mono text-xs min-h-[120px]"
@@ -748,6 +783,88 @@ export default function EmailCampaignsPage() {
         </DialogContent>
       </Dialog>
 
+      {/* Product Picker — inserts real Shopify product cards (image, title,
+          price, link to the live storefront) into the campaign body, so
+          "suggested products" are always real catalog data, never invented. */}
+      <Dialog open={productPickerOpen} onOpenChange={(v) => { setProductPickerOpen(v); if (!v) { setSelectedProductIds(new Set()); setProductSearch(""); } }}>
+        <DialogContent className="sm:max-w-2xl max-h-[80vh] flex flex-col">
+          <DialogHeader>
+            <DialogTitle>Add Products from Your Store</DialogTitle>
+            <DialogDescription>Select products to insert as image cards linking to your live storefront.</DialogDescription>
+          </DialogHeader>
+          <div className="relative">
+            <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
+            <Input placeholder="Search products…" className="pl-8" value={productSearch} onChange={e => setProductSearch(e.target.value)} />
+          </div>
+          <div className="flex-1 overflow-y-auto grid grid-cols-2 sm:grid-cols-3 gap-3 py-2">
+            {productsLoading ? (
+              <p className="col-span-full text-sm text-muted-foreground text-center py-8">Loading your products…</p>
+            ) : filteredProducts.length === 0 ? (
+              <p className="col-span-full text-sm text-muted-foreground text-center py-8">
+                {shopifyConfig?.storeDomain ? "No products found." : "Connect Shopify to select real products."}
+              </p>
+            ) : filteredProducts.map((p: any) => {
+              const selected = selectedProductIds.has(String(p.id));
+              return (
+                <button
+                  key={p.id}
+                  type="button"
+                  onClick={() => setSelectedProductIds(prev => {
+                    const next = new Set(prev);
+                    if (next.has(String(p.id))) next.delete(String(p.id)); else next.add(String(p.id));
+                    return next;
+                  })}
+                  className={`relative rounded-lg border overflow-hidden text-left transition-colors ${selected ? "border-primary ring-1 ring-primary" : "border-border hover:border-muted-foreground/40"}`}
+                >
+                  {selected && <div className="absolute top-1.5 right-1.5 bg-primary text-primary-foreground rounded-full p-0.5 z-10"><Check className="h-3 w-3" /></div>}
+                  <div className="aspect-square bg-muted">
+                    {p.images?.[0]?.src ? (
+                      <img src={p.images[0].src} alt={p.title} className="w-full h-full object-cover" />
+                    ) : (
+                      <div className="w-full h-full flex items-center justify-center"><ImageIcon className="h-6 w-6 text-muted-foreground/40" /></div>
+                    )}
+                  </div>
+                  <div className="p-2">
+                    <p className="text-xs font-medium truncate">{p.title}</p>
+                    <p className="text-xs text-muted-foreground">${p.variants?.[0]?.price ?? "—"}</p>
+                  </div>
+                </button>
+              );
+            })}
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setProductPickerOpen(false)}>Cancel</Button>
+            <Button
+              disabled={selectedProductIds.size === 0}
+              onClick={() => {
+                const chosen = filteredProducts.filter((p: any) => selectedProductIds.has(String(p.id)));
+                const domain = shopifyConfig?.storeDomain;
+                const cards = chosen.map((p: any) => {
+                  const price = p.variants?.[0]?.price ?? "";
+                  const img = p.images?.[0]?.src ?? "";
+                  const url = domain ? `https://${domain}/products/${p.handle}` : "#";
+                  return `<td style="padding:8px;text-align:center;vertical-align:top;width:${Math.floor(100 / Math.min(chosen.length, 3))}%;">
+    <a href="${url}" style="text-decoration:none;color:inherit;">
+      <img src="${img}" alt="${p.title}" style="width:100%;max-width:200px;height:auto;border-radius:8px;display:block;margin:0 auto;" />
+      <p style="font-size:14px;margin:8px 0 2px;color:#333;">${p.title}</p>
+      <p style="font-size:13px;margin:0 0 8px;color:#666;">$${price}</p>
+      <span style="display:inline-block;padding:6px 16px;background:#111;color:#fff;font-size:12px;border-radius:4px;">Shop Now</span>
+    </a>
+  </td>`;
+                }).join("");
+                const block = `\n<table style="width:100%;border-collapse:collapse;margin:16px 0;"><tr>\n${cards}\n</tr></table>\n`;
+                setCampaignForm(f => ({ ...f, bodyHtml: f.bodyHtml + block }));
+                setProductPickerOpen(false);
+                setSelectedProductIds(new Set());
+                toast.success(`Added ${chosen.length} product${chosen.length === 1 ? "" : "s"} to the email body`);
+              }}
+            >
+              Insert {selectedProductIds.size > 0 ? selectedProductIds.size : ""} Product{selectedProductIds.size === 1 ? "" : "s"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
       {/* The old standalone "Scrape Prospects" dialog was removed — it
           duplicated the AI Persona Ideas tab below but without that tab's
           disclaimer that these are AI-invented profiles, not real scraped
@@ -784,6 +901,34 @@ export default function EmailCampaignsPage() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+    </div>
+  );
+}
+
+function CampaignVariantStats({ campaignId }: { campaignId: number }) {
+  const { data } = trpc.emailCampaigns.getVariantStats.useQuery({ campaignId });
+  if (!data) return null;
+  const winner = data.a.sent > 0 && data.b.sent > 0
+    ? (data.a.openRate === data.b.openRate ? null : data.a.openRate > data.b.openRate ? "a" : "b")
+    : null;
+  return (
+    <div className="rounded-lg border bg-muted/20 p-3 mb-3 space-y-2">
+      <div className="text-xs font-medium text-muted-foreground flex items-center gap-1.5">
+        <BarChart3 className="h-3.5 w-3.5" />A/B Test Results
+      </div>
+      {(["a", "b"] as const).map((v) => {
+        const stat = data[v];
+        const subject = v === "a" ? data.subjectA : data.subjectB;
+        return (
+          <div key={v} className={`flex items-center justify-between text-xs rounded px-2 py-1.5 ${winner === v ? "bg-emerald-500/10 border border-emerald-500/20" : "bg-background/50"}`}>
+            <div className="min-w-0 mr-2">
+              <span className="font-semibold uppercase mr-1.5">{v}{winner === v ? " 🏆" : ""}</span>
+              <span className="text-muted-foreground truncate">{subject}</span>
+            </div>
+            <span className="flex-shrink-0 font-medium">{stat.sent} sent · {stat.opened} opened ({stat.openRate}%) · {stat.clicked} clicked</span>
+          </div>
+        );
+      })}
     </div>
   );
 }

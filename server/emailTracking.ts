@@ -46,6 +46,13 @@ function safeRedirectTarget(target: string): string {
   }
 }
 
+// A/B variant tag ("a"/"b"), carried through as a `?v=` query param on
+// tracking URLs. Anything else is ignored rather than stored.
+function parseVariant(req: Request): "a" | "b" | null {
+  const v = req.query.v;
+  return v === "a" || v === "b" ? v : null;
+}
+
 export function registerEmailTrackingRoutes(app: Express) {
   // Open tracking
   app.get("/api/email/o/:campaignId/:prospectId/:userId", async (req: Request, res: Response) => {
@@ -61,6 +68,7 @@ export function registerEmailTrackingRoutes(app: Express) {
         clickUrl: null,
         userAgent: req.headers["user-agent"] || null,
         ipAddress: req.ip || null,
+        variant: parseVariant(req),
       }).catch(() => {});
     }
     res.send(TRACKING_PIXEL);
@@ -80,6 +88,7 @@ export function registerEmailTrackingRoutes(app: Express) {
         clickUrl: safeTarget,
         userAgent: req.headers["user-agent"] || null,
         ipAddress: req.ip || null,
+        variant: parseVariant(req),
       }).catch(() => {});
     }
     res.redirect(302, safeTarget);
@@ -98,6 +107,7 @@ export function registerEmailTrackingRoutes(app: Express) {
         clickUrl: null,
         userAgent: req.headers["user-agent"] || null,
         ipAddress: req.ip || null,
+        variant: null,
       }).catch(() => {});
     }
     res.set("Content-Type", "text/html");
@@ -117,11 +127,12 @@ export function registerEmailTrackingRoutes(app: Express) {
 export function instrumentEmailHtml(
   html: string,
   publicBaseUrl: string,
-  ids: { campaignId: number; prospectId: number; userId: number },
+  ids: { campaignId: number; prospectId: number; userId: number; variant?: "a" | "b" | null },
 ): string {
-  const { campaignId, prospectId, userId } = ids;
+  const { campaignId, prospectId, userId, variant } = ids;
+  const variantParam = variant ? `&v=${variant}` : "";
   const trackedClick = (url: string) =>
-    `${publicBaseUrl}/api/email/c/${campaignId}/${prospectId}/${userId}?u=${encodeURIComponent(url)}`;
+    `${publicBaseUrl}/api/email/c/${campaignId}/${prospectId}/${userId}?u=${encodeURIComponent(url)}${variantParam}`;
 
   let out = html.replace(
     /href=(["'])(https?:\/\/[^"']+)\1/gi,
@@ -134,7 +145,7 @@ export function instrumentEmailHtml(
       `<a href="${unsubscribeUrl}" style="color:#999;">Unsubscribe</a></p>`;
   }
 
-  const pixel = `<img src="${publicBaseUrl}/api/email/o/${campaignId}/${prospectId}/${userId}" width="1" height="1" style="display:none" alt="" />`;
+  const pixel = `<img src="${publicBaseUrl}/api/email/o/${campaignId}/${prospectId}/${userId}${variant ? `?v=${variant}` : ""}" width="1" height="1" style="display:none" alt="" />`;
   out += pixel;
 
   return out;

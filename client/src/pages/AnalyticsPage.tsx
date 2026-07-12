@@ -58,10 +58,15 @@ function ScoreRing({ score, label, color }: { score: number; label: string; colo
   );
 }
 
+const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 3600 * 1000).toISOString().slice(0, 10);
+const today = new Date().toISOString().slice(0, 10);
+
 export default function AnalyticsPage() {
   const { data: overview, isLoading } = trpc.analytics.getOverview.useQuery();
   const { data: auditHistory } = trpc.analytics.getAuditHistory.useQuery();
   const { data: keywords } = trpc.analytics.getKeywordTrends.useQuery();
+  const { data: sales, isLoading: salesLoading } = trpc.analytics.getSalesOverview.useQuery();
+  const { data: pl } = trpc.accounting.getPL.useQuery({ startDate: thirtyDaysAgo, endDate: today });
 
   if (isLoading) {
     return (
@@ -113,7 +118,74 @@ export default function AnalyticsPage() {
         <p className="text-white/40 text-sm mt-1">Business-wide performance overview</p>
       </div>
 
-      {/* Top KPIs */}
+      {/* Sales Performance — real Shopify revenue, not automation activity counts */}
+      <div>
+        <h2 className="text-sm font-semibold text-white/70 uppercase tracking-widest mb-3">Sales Performance</h2>
+        {salesLoading ? (
+          <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+            {Array.from({ length: 4 }).map((_, i) => <Skeleton key={i} className="h-28 bg-white/5" />)}
+          </div>
+        ) : !sales?.connected ? (
+          <Card className="bg-[#0f0f1a] border-white/5">
+            <CardContent className="p-8 text-center text-white/30 text-sm">Connect Shopify to see real sales data here.</CardContent>
+          </Card>
+        ) : (
+          <>
+            <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
+              <StatCard icon={DollarSign} label="Revenue (30d)" value={`$${sales.revenue30d.toLocaleString()}`} sub={`$${sales.revenue7d.toLocaleString()} last 7d`} color="green" />
+              <StatCard icon={Package} label="Orders (30d)" value={sales.orders30d} sub={`${sales.orders7d} last 7d`} color="blue" />
+              <StatCard icon={TrendingUp} label="Avg Order Value" value={`$${sales.aov30d.toFixed(2)}`} sub={`$${sales.aov7d.toFixed(2)} last 7d`} color="violet" />
+              <StatCard
+                icon={DollarSign}
+                label="Net Profit (30d)"
+                value={pl ? `$${pl.netProfit.toLocaleString()}` : "—"}
+                sub={pl ? `${pl.grossRevenue > 0 ? Math.round((pl.netProfit / pl.grossRevenue) * 100) : 0}% margin` : "Run Accounting Sync first"}
+                color={pl && pl.netProfit >= 0 ? "green" : "red"}
+              />
+            </div>
+            <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+              <Card className="bg-[#0f0f1a] border-white/5 col-span-2">
+                <CardHeader className="pb-2">
+                  <CardTitle className="text-sm font-medium text-white/60 uppercase tracking-widest">Revenue — Last 30 Days</CardTitle>
+                </CardHeader>
+                <CardContent>
+                  {sales.dailySeries.length > 0 ? (
+                    <ResponsiveContainer width="100%" height={180}>
+                      <BarChart data={sales.dailySeries}>
+                        <CartesianGrid strokeDasharray="3 3" stroke="#ffffff08" />
+                        <XAxis dataKey="date" tick={{ fill: "#ffffff40", fontSize: 10 }} axisLine={false} tickLine={false} tickFormatter={(d) => d.slice(5)} />
+                        <YAxis tick={{ fill: "#ffffff40", fontSize: 11 }} axisLine={false} tickLine={false} />
+                        <Tooltip contentStyle={{ background: "#1a1a2e", border: "1px solid #ffffff15", borderRadius: 8, color: "#fff" }} />
+                        <Bar dataKey="revenue" fill="#34d399" radius={[4, 4, 0, 0]} name="Revenue ($)" />
+                      </BarChart>
+                    </ResponsiveContainer>
+                  ) : (
+                    <div className="flex items-center justify-center h-44 text-white/30 text-sm">No paid orders yet</div>
+                  )}
+                </CardContent>
+              </Card>
+              <Card className="bg-[#0f0f1a] border-white/5">
+                <CardHeader className="pb-2">
+                  <CardTitle className="text-sm font-medium text-white/60 uppercase tracking-widest">Top Products (30d)</CardTitle>
+                </CardHeader>
+                <CardContent className="space-y-2">
+                  {sales.topProducts.length > 0 ? sales.topProducts.slice(0, 6).map((p) => (
+                    <div key={p.title} className="flex items-center justify-between text-xs">
+                      <span className="text-white/60 truncate mr-2">{p.title}</span>
+                      <span className="text-white font-medium flex-shrink-0">${p.revenue.toLocaleString()}</span>
+                    </div>
+                  )) : (
+                    <p className="text-white/30 text-sm text-center py-4">No sales yet</p>
+                  )}
+                </CardContent>
+              </Card>
+            </div>
+            <p className="text-[10px] text-white/20 mt-2">Based on the last {sales.ordersSampled} paid orders from Shopify.</p>
+          </>
+        )}
+      </div>
+
+      {/* Top KPIs — automation activity, not sales */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
         <StatCard icon={Activity} label="Active Automations" value={`${ov?.automations.active ?? 0}/${ov?.automations.total ?? 0}`} sub="modules running" color="violet" />
         <StatCard icon={Search} label="Keywords Tracked" value={ov?.seo.keywordCount ?? 0} sub="in database" color="blue" />

@@ -22,15 +22,17 @@ import {
   getShopifyConfig, getSourcingAppCredential, getDb,
   tryAcquireAutomationLock, releaseAutomationLock,
   getOrCreateCjExpenseAccount, insertTransaction,
+  getAutomationSetting, updateAutomationSetting,
 } from "./db";
 import { sourcedProducts } from "../drizzle/schema";
 import { eq, inArray } from "drizzle-orm";
 import {
   getCjAccessToken, invalidateCjToken,
-  getCjProductVariants, createCjOrder, getCjOrderStatus,
+  getCjProductVariants, createCjOrder, getCjOrderStatus, getCjBalance,
 } from "./_core/cjDropshipping";
 import { notifyOwner } from "./_core/notification";
 import { sleep } from "./rateLimiter";
+import { CJ_LOW_BALANCE_THRESHOLD } from "../shared/const";
 
 export type FulfillmentResult = {
   ordersPlaced: number;
@@ -105,6 +107,36 @@ export async function runAutoFulfillment(): Promise<FulfillmentResult> {
     rawApiKey = cjCred?.apiKey ? decryptCredentials({ apiKey: cjCred.apiKey }).apiKey : null;
     cjEmail = cjCred?.apiSecret ?? null;
     const cjToken = rawApiKey && cjEmail ? await getCjAccessToken(cjEmail, rawApiKey) : null;
+
+    // Proactive low-balance alert — the wallet balance is otherwise only
+    // visible if someone happens to open the Fulfillment page. Checked on
+    // every run (every 30 min via cron, or on manual "Run Now"). Only fires
+    // once per dip below the threshold (tracked in automationSettings.config)
+    // so it doesn't re-notify every single run while balance stays low.
+    if (cjToken) {
+      try {
+        const balance = await getCjBalance(cjToken);
+        if (balance) {
+          const setting = await getAutomationSetting("fulfillment");
+          const config = (setting?.config as Record<string, unknown>) ?? {};
+          const wasAlerted = config.cjLowBalanceAlerted === true;
+          const isLow = balance.amount < CJ_LOW_BALANCE_THRESHOLD;
+          if (isLow && !wasAlerted) {
+            await notifyOwner({
+              module: "fulfillment",
+              level: "error",
+              title: `CJ wallet balance is low: $${balance.amount.toFixed(2)}`,
+              content: `Your CJ Dropshipping wallet balance has dropped below $${CJ_LOW_BALANCE_THRESHOLD}. New CJ orders will fail to place once it hits $0. Top up your CJ wallet (CJ supports funding via PayPal) as soon as possible.`,
+            }).catch(() => {});
+            await updateAutomationSetting("fulfillment", { config: { ...config, cjLowBalanceAlerted: true } });
+          } else if (!isLow && wasAlerted) {
+            await updateAutomationSetting("fulfillment", { config: { ...config, cjLowBalanceAlerted: false } });
+          }
+        }
+      } catch (err) {
+        console.warn("[Fulfillment] CJ balance check failed:", err);
+      }
+    }
 
     const { orders } = await client.getOrders(50, "open");
 

@@ -420,14 +420,14 @@ export function registerScheduledRoutes(app: Router) {
         const subject = moduleConfig.subject || "Discover Our Latest Home Decor Collection";
         const aiResp = await invokeLLM({ messages: [{ role: "system", content: "You are an expert email marketer for a premium home decor brand." }, { role: "user", content: `Write a compelling ${campaignType} email for a home decor store. Subject: "${subject}". Include: warm greeting, 2-3 product highlights with emotional storytelling, clear CTA button, and unsubscribe note. Return JSON: { subject, previewText, bodyHtml, bodyText }` }], response_format: { type: "json_schema", json_schema: { name: "email", strict: true, schema: { type: "object", properties: { subject: { type: "string" }, previewText: { type: "string" }, bodyHtml: { type: "string" }, bodyText: { type: "string" } }, required: ["subject","previewText","bodyHtml","bodyText"], additionalProperties: false } } } });
         const emailContent = JSON.parse(typeof aiResp.choices[0].message.content === "string" ? aiResp.choices[0].message.content : JSON.stringify(aiResp.choices[0].message.content));
-        const campaign = await createEmailCampaign({ userId: config.userId, name: `Auto Campaign ${new Date().toLocaleDateString()}`, ...emailContent, type: campaignType as any, status: "sent", sentAt: new Date(), automationEnabled: false, frequencyDays: 30, totalSent: 0, totalDelivered: 0, totalOpened: 0, totalClicked: 0, totalBounced: 0, totalUnsubscribed: 0 });
+        const campaign = await createEmailCampaign({ userId: config.userId, name: `Auto Campaign ${new Date().toLocaleDateString()}`, ...emailContent, type: campaignType as any, status: "sent", sentAt: new Date(), automationEnabled: false, frequencyDays: 30, totalSent: 0, totalDelivered: 0, totalOpened: 0, totalClicked: 0, totalBounced: 0, totalUnsubscribed: 0, abTestEnabled: false, variantBSubject: null });
         let batchDelivered = 0;
         for (const prospect of newProspects) {
           const html = instrumentEmailHtml(emailContent.bodyHtml, ENV.publicBaseUrl, { campaignId: campaign.id, prospectId: prospect.id, userId: config.userId });
           const sendResult = isEmailConfigured()
             ? await sendEmail({ to: prospect.email, subject: emailContent.subject, html, text: emailContent.bodyText })
             : { success: false as const, error: "RESEND_API_KEY not configured" };
-          await insertEmailEvent({ campaignId: campaign.id, prospectId: prospect.id, userId: config.userId, event: sendResult.success ? "sent" : "bounced", clickUrl: null, userAgent: null, ipAddress: null });
+          await insertEmailEvent({ campaignId: campaign.id, prospectId: prospect.id, userId: config.userId, event: sendResult.success ? "sent" : "bounced", clickUrl: null, userAgent: null, ipAddress: null, variant: null });
           if (sendResult.success) {
             batchDelivered++;
             await updateEmailProspect(prospect.id, { lastContactedAt: new Date() });

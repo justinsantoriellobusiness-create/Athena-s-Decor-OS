@@ -9,6 +9,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
+import { CJ_LOW_BALANCE_THRESHOLD } from "@shared/const";
 
 const STATUS_META: Record<string, { label: string; badge: string }> = {
   pending: { label: "Pending", badge: "badge-info" },
@@ -36,7 +37,6 @@ function timeAgo(date: string | Date | null | undefined) {
   return `${Math.round(hrs / 24)}d ago`;
 }
 
-const LOW_BALANCE_THRESHOLD = 20;
 // DSers has no public API, so there's no per-order deep link — this jumps
 // to the DSers dashboard itself so you can find the order there manually.
 const DSERS_DASHBOARD_URL = "https://www.dsers.com/";
@@ -81,7 +81,7 @@ export default function FulfillmentPage() {
   const shopifyOrderUrl = (id: string) =>
     shopifyConfig?.storeDomain ? `https://${shopifyConfig.storeDomain}/admin/orders/${id}` : undefined;
 
-  const lowBalance = balance?.amount != null && balance.amount < LOW_BALANCE_THRESHOLD;
+  const lowBalance = balance?.amount != null && balance.amount < CJ_LOW_BALANCE_THRESHOLD;
 
   return (
     <div className="p-6 lg:p-8 space-y-6">
