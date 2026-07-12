@@ -25,9 +25,29 @@ export function isEmailConfigured(): boolean {
   return Boolean(ENV.resendApiKey);
 }
 
+// HTTP header values must be Latin-1 (byte values 0-255). If RESEND_API_KEY
+// was copy-pasted from a PDF/webpage/notes app that silently swapped in a
+// "smart" character (curly quote, en-dash, bullet, etc.), the raw fetch()
+// call throws a cryptic "Cannot convert argument to a ByteString" — this
+// catches that upfront with an actionable message instead.
+function findInvalidHeaderChar(value: string): { index: number; code: number } | null {
+  for (let i = 0; i < value.length; i++) {
+    const code = value.charCodeAt(i);
+    if (code > 255) return { index: i, code };
+  }
+  return null;
+}
+
 export async function sendEmail(options: SendEmailOptions): Promise<SendEmailResult> {
   if (!ENV.resendApiKey) {
     return { success: false, error: "RESEND_API_KEY is not configured" };
+  }
+  const badChar = findInvalidHeaderChar(ENV.resendApiKey);
+  if (badChar) {
+    return {
+      success: false,
+      error: `RESEND_API_KEY contains an invalid character (code point ${badChar.code} at position ${badChar.index}) — likely a "smart" quote/dash/bullet from a copy-paste. Re-copy the key directly from Resend's dashboard into Railway's env vars, typing over any autocorrected characters.`,
+    };
   }
 
   const from = options.fromEmail

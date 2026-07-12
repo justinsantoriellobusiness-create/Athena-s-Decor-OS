@@ -416,16 +416,11 @@ Return JSON: { "optimizedTitle": string, "optimizedDescription": string, "metaTi
     const config = await getShopifyConfig();
     if (!config?.isConnected) throw new TRPCError({ code: "BAD_REQUEST", message: "Shopify not connected. Please connect your store first." });
     const client = await getShopifyClient(config.storeDomain, decryptCredential(config.accessToken) ?? config.accessToken);
-    let allProducts: any[] = [];
-    let page = 1;
-    while (true) {
-      const batchResult = await client.getProducts(250, String(page));
-      const batch = batchResult.products ?? [];
-      if (!batch.length) break;
-      allProducts = allProducts.concat(batch);
-      if (batch.length < 250) break;
-      page++;
-    }
+    // Shopify's page_info cursor must come from its own Link response header
+    // — passing an incrementing page number there isn't valid and previously
+    // made every bulk-optimize run fail immediately with a 400 "page_info
+    // invalid value" on the very first request.
+    const allProducts = await client.getAllProducts(250);
     if (!allProducts.length) throw new TRPCError({ code: "BAD_REQUEST", message: "No products found in your Shopify store." });
     const jobId = await createOptimizationJob(allProducts.length);
     await insertOptimizationQueueItems(jobId, allProducts.map((p: any) => ({
@@ -667,13 +662,58 @@ Return JSON: { "optimizedTitle": string, "optimizedDescription": string, "metaTi
 const blogRouter = router({
   list: protectedProcedure.query(async () => getBlogPosts(30)),
 
+  // Brainstorms topic ideas so "generate on its own" doesn't require the
+  // user to think one up first — aware of recent post titles so it doesn't
+  // just suggest the same handful of topics every time.
+  suggestTopics: protectedProcedure.mutation(async () => {
+    const recentPosts = await getBlogPosts(15);
+    const recentTitles = recentPosts.map(p => p.title).filter(Boolean);
+    const response = await invokeLLM({
+      messages: [
+        { role: "system", content: "You are a content strategist for a premium home decor e-commerce brand. Return structured JSON only." },
+        {
+          role: "user",
+          content: `Suggest 6 blog post topic ideas for Athena's Decor — a premium home decor brand (vases, candles, wall art, throw pillows, mirrors, curated accessories). Each should be a specific, compelling title idea, not a generic category.${
+            recentTitles.length ? `\nAlready published, don't repeat these or anything too similar: ${recentTitles.slice(0, 15).join("; ")}` : ""
+          }\nReturn JSON: { "topics": string[] }`,
+        },
+      ],
+      response_format: {
+        type: "json_schema",
+        json_schema: {
+          name: "topic_suggestions", strict: true,
+          schema: { type: "object", properties: { topics: { type: "array", items: { type: "string" } } }, required: ["topics"], additionalProperties: false },
+        },
+      },
+    });
+    const raw = response.choices[0]?.message?.content;
+    const parsed = JSON.parse(typeof raw === "string" ? raw : '{"topics":[]}');
+    return { topics: (parsed.topics ?? []).slice(0, 6) as string[] };
+  }),
+
   generate: protectedProcedure
     .input(z.object({
-      topic: z.string().min(1),
+      topic: z.string().optional(),
       tone: z.enum(["informative", "inspirational", "promotional", "storytelling"]).default("informative"),
       wordCount: z.number().default(800),
     }))
     .mutation(async ({ input }) => {
+      // No topic given — generate entirely hands-off by having the AI pick
+      // one first, so "Generate Post" works with zero input.
+      let topic = input.topic?.trim();
+      if (!topic) {
+        const recentPosts = await getBlogPosts(15);
+        const recentTitles = recentPosts.map(p => p.title).filter(Boolean);
+        const topicResponse = await invokeLLM({
+          messages: [
+            { role: "system", content: "You are a content strategist for a premium home decor e-commerce brand. Return structured JSON only." },
+            { role: "user", content: `Suggest one specific, compelling blog post title idea for Athena's Decor (vases, candles, wall art, throw pillows, mirrors, curated accessories).${recentTitles.length ? ` Don't repeat these already-published titles: ${recentTitles.slice(0, 15).join("; ")}` : ""} Return JSON: { "topic": string }` },
+          ],
+          response_format: { type: "json_schema", json_schema: { name: "topic", strict: true, schema: { type: "object", properties: { topic: { type: "string" } }, required: ["topic"], additionalProperties: false } } },
+        });
+        const topicRaw = topicResponse.choices[0]?.message?.content;
+        topic = JSON.parse(typeof topicRaw === "string" ? topicRaw : '{"topic":"home decor trends"}').topic || "home decor trends";
+      }
       // Generate content
       const contentResponse = await invokeLLM({
         messages: [
@@ -683,7 +723,7 @@ const blogRouter = router({
           },
           {
             role: "user",
-            content: `Write a ${input.tone} blog post about "${input.topic}" for Athena's Decor — a premium home decor brand with an elegant, feminine, warm-toned aesthetic. Products include decorative vases, candles, wall art, throw pillows, mirrors, and curated home accessories.
+            content: `Write a ${input.tone} blog post about "${topic}" for Athena's Decor — a premium home decor brand with an elegant, feminine, warm-toned aesthetic. Products include decorative vases, candles, wall art, throw pillows, mirrors, and curated home accessories.
             Target ~${input.wordCount} words. Include internal linking opportunities.
             Return JSON: { "title": string, "slug": string, "content": string (HTML), "excerpt": string (150 chars), "seoTitle": string, "seoDescription": string, "tags": string[], "imagePrompt": string (detailed prompt for a REALISTIC lifestyle photo: specify a styled home interior scene featuring Athena's Decor products, warm natural light, neutral tones with gold accents, editorial photography style — NO text, NO logos, NO illustrations), "imageAltText": string (SEO-optimized alt text describing the image in context of the post and Athena's Decor brand) }`,
           },
@@ -1065,9 +1105,14 @@ const sourcingRouter = router({
           throw new TRPCError({ code: "BAD_REQUEST", message: `AutoDS connection failed: ${e.message}` });
         }
       } else if (input.app === "cj") {
-        // Test CJ connection
-        const accessToken = cred.accessToken ? decryptCredentials({ accessToken: cred.accessToken }).accessToken : null;
-        if (!accessToken) throw new TRPCError({ code: "BAD_REQUEST", message: "CJ Access Token is required" });
+        // CJ uses 2-step auth: account email + API key mint a short-lived
+        // access token (getCjAccessToken) — there's no persistent "access
+        // token" to copy-paste from CJ's dashboard, unlike a typical API key.
+        const rawApiKey = cred.apiKey ? decryptCredentials({ apiKey: cred.apiKey }).apiKey : null;
+        const cjEmail = cred.apiSecret ?? null;
+        if (!rawApiKey || !cjEmail) throw new TRPCError({ code: "BAD_REQUEST", message: "CJ API Key and Account Email are both required" });
+        const accessToken = await getCjAccessToken(cjEmail, rawApiKey);
+        if (!accessToken) throw new TRPCError({ code: "BAD_REQUEST", message: "CJ authentication failed — check your API key and account email" });
         try {
           const res = await fetch("https://developers.cjdropshipping.com/api2.0/v1/product/getCategory", {
             headers: { "CJ-Access-Token": accessToken },
@@ -1143,9 +1188,12 @@ const sourcingRouter = router({
     .input(z.object({ productIds: z.array(z.number()) }))
     .mutation(async ({ input }) => {
       const cred = await getSourcingAppCredential("cj");
-      if (!cred?.isConnected) throw new TRPCError({ code: "BAD_REQUEST", message: "CJ Dropshipping not connected. Please add your Access Token in Sourcing Settings." });
-      const accessToken = cred.accessToken ? decryptCredentials({ accessToken: cred.accessToken }).accessToken : null;
-      if (!accessToken) throw new TRPCError({ code: "BAD_REQUEST", message: "CJ Access Token missing" });
+      if (!cred?.isConnected) throw new TRPCError({ code: "BAD_REQUEST", message: "CJ Dropshipping not connected. Add your CJ API Key and Account Email in Sourcing Settings." });
+      const rawApiKey = cred.apiKey ? decryptCredentials({ apiKey: cred.apiKey }).apiKey : null;
+      const cjEmail = cred.apiSecret ?? null;
+      if (!rawApiKey || !cjEmail) throw new TRPCError({ code: "BAD_REQUEST", message: "CJ API Key and Account Email are required" });
+      const accessToken = await getCjAccessToken(cjEmail, rawApiKey);
+      if (!accessToken) throw new TRPCError({ code: "BAD_REQUEST", message: "CJ authentication failed — check your API key and account email in Sourcing Settings" });
 
       let pushed = 0; let failed = 0;
       for (const productId of input.productIds) {
@@ -3177,6 +3225,7 @@ Return as JSON array.`;
       (async () => {
         let delivered = 0;
         let failed = 0;
+        let firstError: string | null = null;
         for (const prospect of prospects) {
           const html = campaign.bodyHtml && publicBaseUrl
             ? instrumentEmailHtml(campaign.bodyHtml, publicBaseUrl, { campaignId, prospectId: prospect.id, userId })
@@ -3207,6 +3256,7 @@ Return as JSON array.`;
             await updateEmailProspect(prospect.id, { lastContactedAt: new Date() }).catch(() => {});
           } else {
             failed++;
+            if (!firstError) firstError = result.error;
             console.warn(`[EmailCampaign] Failed to send to ${prospect.email}: ${result.error}`);
           }
 
@@ -3216,6 +3266,14 @@ Return as JSON array.`;
 
         await updateEmailCampaign(campaignId, { status: "sent", sentAt: new Date(), totalSent: delivered }).catch(() => {});
         console.log(`[EmailCampaign] Campaign ${campaignId} finished: ${delivered} delivered, ${failed} failed`);
+        // Real proof of what happened — previously this only showed up in
+        // server logs, invisible from the app itself.
+        await logActivity({
+          module: "email_campaigns",
+          level: failed === 0 ? "success" : delivered === 0 ? "error" : "warning",
+          title: `Campaign "${campaign.subject}": ${delivered} delivered, ${failed} failed`,
+          detail: failed > 0 ? `First failure: ${firstError}` : undefined,
+        });
       })().catch(err => console.error(`[EmailCampaign] Background send crashed for campaign ${campaignId}:`, err));
 
       return {

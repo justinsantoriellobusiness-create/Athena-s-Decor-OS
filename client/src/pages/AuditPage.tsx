@@ -223,6 +223,26 @@ export default function AuditPage() {
         </Button>
       </div>
 
+      {/* Real proof of what happened — errors and partial failures were previously invisible beyond a red badge */}
+      {activeRun && activeRun.status === "error" && (
+        <div className="glass rounded-xl p-4 border border-red-500/30 flex items-start gap-3 text-xs">
+          <XCircle className="w-4 h-4 text-red-400 flex-shrink-0 mt-0.5" />
+          <div>
+            <p className="text-white font-medium">This audit failed to run.</p>
+            <p className="text-white/50 mt-0.5">{(activeRun as any).errorMessage || "No error detail was recorded."}</p>
+          </div>
+        </div>
+      )}
+      {activeRun && activeRun.status === "completed" && (activeRun as any).errorMessage && (
+        <div className="glass rounded-xl p-4 border border-amber-500/30 flex items-start gap-3 text-xs">
+          <AlertTriangle className="w-4 h-4 text-amber-400 flex-shrink-0 mt-0.5" />
+          <div>
+            <p className="text-white font-medium">Audit completed, but some pages couldn't be checked.</p>
+            <p className="text-white/50 mt-0.5">{(activeRun as any).errorMessage}</p>
+          </div>
+        </div>
+      )}
+
       {/* Score summary */}
       {activeRun && activeRun.status === "completed" && (
         <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">

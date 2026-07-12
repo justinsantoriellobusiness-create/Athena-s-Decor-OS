@@ -197,6 +197,15 @@ export default function SourcingPage() {
 
           {selectedSpec && (
             <>
+              {!cjConnected && (
+                <div className="flex items-center gap-2 bg-amber-500/10 border border-amber-500/20 rounded-lg px-3 py-2 text-xs text-amber-300">
+                  <XCircle className="w-3.5 h-3.5 flex-shrink-0" />
+                  CJ Dropshipping isn't connected — scraping will only produce AI-generated ideas (marked "AI idea"), not real, importable listings.{" "}
+                  <button onClick={() => setActiveTab("settings")} className="underline underline-offset-2 hover:text-amber-200">
+                    Connect it in App Connections
+                  </button>.
+                </div>
+              )}
               {/* Toolbar */}
               <div className="flex items-center gap-2 flex-wrap bg-white/3 border border-white/8 rounded-xl p-3">
                 <Button
@@ -530,7 +539,8 @@ export default function SourcingPage() {
             icon="📦"
             isConnected={!!cjConnected}
             fields={[
-              { key: "accessToken", label: "CJ Access Token", placeholder: "Your CJ API Access Token", type: "password" },
+              { key: "apiKey", label: "CJ API Key", placeholder: "Your CJ Dropshipping API key", type: "password" },
+              { key: "apiSecret", label: "CJ Account Email", placeholder: "The email you log into CJ Dropshipping with", type: "text" },
             ]}
             onRefetch={() => appCredsQuery.refetch()}
           />

@@ -166,6 +166,9 @@ export default function InventoryPage() {
   const shopifyAdminUrl = (productId: string) =>
     shopifyConfig?.storeDomain ? `https://${shopifyConfig.storeDomain}/admin/products/${productId}` : undefined;
 
+  const storefrontUrl = (handle: string | null | undefined) =>
+    shopifyConfig?.storeDomain && handle ? `https://${shopifyConfig.storeDomain}/products/${handle}` : undefined;
+
   const toggleExpanded = (id: string) => {
     setExpanded((prev) => {
       const next = new Set(prev);
@@ -206,6 +209,15 @@ export default function InventoryPage() {
             {scanMutation.isPending ? "Scanning…" : "Scan Now"}
           </Button>
         </div>
+      </div>
+
+      <div className="bg-emerald-500/5 border border-emerald-500/10 rounded-lg px-4 py-3 text-xs text-white/50">
+        <strong className="text-white/70">How automatic out-of-stock works:</strong> every scan — either{" "}
+        <strong className="text-white/70">Scan Now</strong> above, or the <strong className="text-white/70">Auto-Sync</strong>{" "}
+        schedule if it's on — checks each product's real Shopify stock (and real CJ supplier stock, for CJ-sourced
+        products) and automatically hides (drafts) anything that's actually out of stock, so it can't be purchased.
+        Nothing extra to set up — it already runs on every scan. You can also hide/republish a whole product, or set
+        an exact stock quantity per variant yourself at any time, below.
       </div>
 
       {/* Scan-in-progress proof bar */}
@@ -362,10 +374,17 @@ export default function InventoryPage() {
                         Hide
                       </Button>
                     )}
+                    {storefrontUrl(group.productHandle) && (
+                      <a href={storefrontUrl(group.productHandle)} target="_blank" rel="noopener noreferrer"
+                        className="flex items-center justify-center h-7 w-7 rounded-md border border-border/50 text-muted-foreground hover:text-foreground hover:bg-secondary/50 transition-colors flex-shrink-0"
+                        title="View live product page (what customers see)">
+                        <Package className="w-3 h-3" />
+                      </a>
+                    )}
                     {shopifyAdminUrl(group.shopifyProductId) && (
                       <a href={shopifyAdminUrl(group.shopifyProductId)} target="_blank" rel="noopener noreferrer"
                         className="flex items-center justify-center h-7 w-7 rounded-md border border-border/50 text-muted-foreground hover:text-foreground hover:bg-secondary/50 transition-colors flex-shrink-0"
-                        title="Open in Shopify Admin">
+                        title="Edit in Shopify Admin">
                         <ExternalLink className="w-3 h-3" />
                       </a>
                     )}

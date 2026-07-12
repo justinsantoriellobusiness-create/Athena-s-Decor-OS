@@ -63,11 +63,11 @@ export class ShopifyClient {
     this.baseUrl = `https://${this.domain}/admin/api/2024-01`;
   }
 
-  private async requestOnce<T>(
+  private async requestOnceWithHeaders<T>(
     method: string,
     path: string,
     body?: unknown
-  ): Promise<T> {
+  ): Promise<{ data: T; linkHeader: string | null }> {
     const url = `${this.baseUrl}${path}`;
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
@@ -93,7 +93,15 @@ export class ShopifyClient {
       throw err;
     }
 
-    return res.json() as Promise<T>;
+    return { data: (await res.json()) as T, linkHeader: res.headers.get("link") };
+  }
+
+  private async requestOnce<T>(
+    method: string,
+    path: string,
+    body?: unknown
+  ): Promise<T> {
+    return (await this.requestOnceWithHeaders<T>(method, path, body)).data;
   }
 
   // Routed through withRateLimit so every Shopify call gets the shared
@@ -102,6 +110,24 @@ export class ShopifyClient {
   // engine's order loop) called request() raw with no rate limiting at all.
   private request<T>(method: string, path: string, body?: unknown): Promise<T> {
     return withRateLimit(() => this.requestOnce<T>(method, path, body));
+  }
+
+  private requestWithHeaders<T>(method: string, path: string, body?: unknown): Promise<{ data: T; linkHeader: string | null }> {
+    return withRateLimit(() => this.requestOnceWithHeaders<T>(method, path, body));
+  }
+
+  /**
+   * Extracts the next-page cursor from Shopify's Link response header
+   * (rel="next"). Shopify's REST pagination requires this exact opaque
+   * token — a plain incrementing page number is NOT valid page_info and
+   * gets rejected with a 400 "page_info invalid value" error.
+   */
+  private static parseNextPageInfo(linkHeader: string | null): string | undefined {
+    if (!linkHeader) return undefined;
+    const nextLink = linkHeader.split(",").find(part => part.includes('rel="next"'));
+    if (!nextLink) return undefined;
+    const match = nextLink.match(/page_info=([^&>]+)/);
+    return match ? decodeURIComponent(match[1]) : undefined;
   }
 
   async testConnection(): Promise<{ shop: { name: string; domain: string; email: string } }> {
@@ -114,19 +140,23 @@ export class ShopifyClient {
     return this.request("GET", `/products.json?${params}`);
   }
 
+  /** Same as getProducts, but also returns the real cursor for the next page (or undefined if this was the last page). */
+  async getProductsPage(limit = 50, pageInfo?: string): Promise<{ products: ShopifyProduct[]; nextPageInfo?: string }> {
+    const params = new URLSearchParams({ limit: String(limit), fields: "id,title,handle,status,variants,images,body_html,tags" });
+    if (pageInfo) params.set("page_info", pageInfo);
+    const { data, linkHeader } = await this.requestWithHeaders<{ products: ShopifyProduct[] }>("GET", `/products.json?${params}`);
+    return { products: data.products, nextPageInfo: ShopifyClient.parseNextPageInfo(linkHeader) };
+  }
+
   /** Fetches every product in the store, paginating past Shopify's per-request limit. */
   async getAllProducts(pageSize = 250): Promise<ShopifyProduct[]> {
     const all: ShopifyProduct[] = [];
     let pageInfo: string | undefined;
     for (let i = 0; i < 100; i++) {
-      const { products } = await this.getProducts(pageSize, pageInfo);
+      const { products, nextPageInfo } = await this.getProductsPage(pageSize, pageInfo);
       all.push(...products);
-      if (products.length < pageSize) break;
-      // Shopify's REST API returns cursor-based page_info via Link headers,
-      // which getProducts() doesn't currently surface — fall back to a
-      // single large page (250) as a practical ceiling until cursor support
-      // is threaded through.
-      break;
+      if (!nextPageInfo || products.length < pageSize) break;
+      pageInfo = nextPageInfo;
     }
     return all;
   }

@@ -13,8 +13,12 @@ Anthropic Claude for all LLM calls.
 ## Connected integrations (live, credentials in Railway env vars only)
 - **Shopify** — Admin API via OAuth client-credentials (auto-refreshes on
   every boot). Store domain, client ID/secret in Railway Variables.
-- **CJ Dropshipping** — API key + account email in Railway Variables.
-  Powers real product search and real order placement.
+- **CJ Dropshipping** — authenticates via **API Key + Account Email** (2-step
+  auth → short-lived access token via `getCjAccessToken()`), entered in
+  Sourcing → App Connections. There is no persistent "access token" to
+  copy-paste from CJ's dashboard — don't reintroduce a raw-token field.
+  Powers real product search, CJ Favorites, real order placement, and (new)
+  real supplier stock/wallet-balance checks.
 - **DSers** — credentials in Railway Variables. Orders routed to DSers' own
   Shopify sync (DSers has no public order-placement API).
 - **eBay** — NOT yet connected, pending user obtaining API credentials.
@@ -42,8 +46,10 @@ Anthropic Claude for all LLM calls.
   (for verified CJ-sourced products), Republish/Hide controls, a per-variant
   "Set Stock" control that writes directly to Shopify's inventory (same as
   Shopify admin — no separate app needed), a live scan progress bar, and a
-  post-scan summary showing exactly what was scanned/hidden/why. Direct link
-  to Shopify Admin per product.
+  post-scan summary showing exactly what was scanned/hidden/why. Links to
+  both Shopify Admin and the live storefront product page. A "How automatic
+  out-of-stock works" banner explains that every scan (manual or Auto-Sync)
+  already auto-hides out-of-stock products — no separate setup needed.
 - **Sourcing page**: every scraped product tagged Verified (real live CJ
   listing) or AI idea (no live match — DSers/AliExpress have no public
   search API, so those are always AI-generated research ideas, never
@@ -79,45 +85,84 @@ on a broken schema, and more). Everything is on `main`, passes
 `npx tsc --noEmit` with 0 errors and `npm run build` cleanly.
 
 ## Known gaps / next candidates (not yet built)
-1. **Real supplier-stock sync — CJ only, not yet verified live.** Inventory
-   scans now call CJ's `product/stock/queryByVid` for any product mapped to
-   a verified CJ listing (`sourced_products.source === "cj" && isVerified`)
-   and use that as the real `supplierStock`, overriding Shopify's own stock
-   number when the supplier is at 0 (auto-hides the product even if Shopify
-   still shows it purchasable). **This has not been confirmed against a live
-   CJ account** — the exact response field names were pieced together from
-   CJ's docs/community reports (their doc site 403s automated fetches), so
-   the code defensively checks several possible field names and treats any
-   failure as "unknown" (falls back to Shopify's own count) rather than a
-   false "confirmed zero," to avoid wrongly hiding in-stock products. After
-   deploy, run "Scan Now" on Inventory and check the Activity Feed entry —
-   it states plainly how many variants were checked via live CJ stock
-   (`cjChecked`) vs. how many CJ mapping checks failed (`cjUnavailable`). If
-   `cjChecked` stays 0 forever despite verified CJ products existing, the
-   endpoint/field names need revisiting.
-   DSers has no public stock-check API, so DSers-sourced products still only
-   use Shopify's own count (unchanged).
-2. **CJ wallet balance endpoint also unverified live**, same caveat as
-   above — `shopping/pay/getBalance` and its field names were pieced
-   together from search results, not confirmed against a live account.
-   Fails safe: shows "unavailable" rather than a false $0/low-balance
-   alarm if the endpoint details are off. Check the Fulfillment page after
-   deploy to confirm a real number shows up.
-3. **CJ order cost in Accounting is an estimate**, not the exact CJ
+1. **Real supplier-stock sync and CJ wallet balance — endpoints still not
+   confirmed against a live CJ account.** `product/stock/queryByVid` and
+   `shopping/pay/getBalance` were pieced together from CJ's docs/community
+   reports (their doc site blocks automated fetches), not verified live.
+   Both fail safe (show "unknown"/"unavailable" rather than a false zero).
+   **This was almost certainly never even reachable before this round** —
+   see the CJ credential bug below; now that credentials are actually
+   collected correctly, check Inventory's Scan Now activity entry
+   (`cjChecked`/`cjUnavailable`) and the Fulfillment page's balance number
+   to confirm real data is coming through.
+2. **CJ order cost in Accounting is an estimate**, not the exact CJ
    invoice amount — `createCjOrder`'s response wasn't touched (real-money
    code, left as-is on purpose) so the transaction is built from CJ's
    listed price at order time. Good enough for a live P&L trend, not
    guaranteed penny-accurate; each transaction's notes say so.
+3. **Email Campaigns "byte string" crash — root cause not fully pinned
+   down.** User saw `Cannot convert argument to a ByteString...`. Every
+   `fetch()` header in the codebase was audited and none embed dynamic
+   campaign/prospect content — the strongest remaining explanation is a
+   corrupted `RESEND_API_KEY` (a "smart quote"/dash/bullet from a
+   copy-paste). Added: (a) upfront validation in `sendEmail()` that catches
+   this and returns an actionable message instead of a cryptic crash, (b)
+   an Activity Feed entry after every campaign send showing delivered/failed
+   counts and the first failure reason, so this is visible in-app instead of
+   only in Railway logs. If it recurs, the Activity Feed entry will now say
+   exactly what broke.
 4. No automated test coverage for fulfillment/CJ/audit-fix logic beyond
    TypeScript type-checking.
 5. Ads platform posting not built (by design, pending dev tokens).
 6. eBay integration pending real credentials.
-7. No order lookup for orders DSers/CJ don't touch is needed beyond the new
-   Fulfillment page — but there's still no full order-search-by-customer
-   view; Fulfillment shows the last 100 paid orders only (Shopify API page
-   size), not a searchable full history.
+7. Fulfillment page shows the last 100 paid orders only (Shopify API page
+   size) — no searchable full order history yet.
 
-## Bugs fixed this round
+## Bugs fixed — round 2
+- **CJ credentials UI didn't match what any working CJ code actually
+  needs.** The Sourcing Settings "CJ Dropshipping" card only had a single
+  "CJ Access Token" field, but CJ has no persistent access token to
+  copy-paste — every real integration (`fulfillmentRunner.ts`,
+  `inventoryRunner.ts`, `sourcingRunner.ts`) authenticates via API Key +
+  Account Email → `getCjAccessToken()` mints a short-lived token. Since the
+  UI never collected API Key/Email, `testAppConnection`("cj") and
+  `pushToCjFavorites` always failed, and — more importantly — CJ auth
+  likely silently failed for sourcing scrapes and the new inventory
+  stock-check/wallet-balance features too, for anyone who only filled in
+  the one field the old UI asked for. Fixed the form to collect API Key +
+  Account Email and wired `testAppConnection`/`pushToCjFavorites` through
+  the same `getCjAccessToken()` flow as everything else. **If CJ scraping,
+  CJ Favorites, or real supplier-stock sync still don't work after this
+  deploy, re-enter your CJ API Key + Account Email in Sourcing → App
+  Connections — the old saved "access token" value is now unused.**
+- **Site Audit: one bad LLM response on any single page killed the entire
+  run**, discarding every issue already found on every other page and
+  showing a bare "Error" badge with no explanation. Each page (of up to 22
+  per run) now has its own try/catch — a failure on one page just skips
+  that page instead of aborting everything, and the run completes with
+  whatever succeeded. The audit UI now also shows the actual error text for
+  failed/partial runs instead of just a red badge.
+- **Bulk Catalog Optimizer always 400'd** ("page_info invalid value") — it
+  paginated Shopify products by passing a literal incrementing page number
+  (`"1"`, `"2"`...) as `page_info`, which Shopify's REST API requires to be
+  an opaque cursor from its own `Link` response header, not a plain number.
+  Every run failed on the very first request. Added real cursor pagination
+  to `ShopifyClient` (`getProductsPage`) and fixed both the optimizer and
+  `getAllProducts()` (which also silently truncated at 250 products before)
+  to use it.
+- **Email Scraper honesty**: this module has always been an AI persona
+  generator (invented plausible-sounding people, never real scraped
+  contacts) and is already correctly excluded from real campaign sends —
+  but one leftover duplicate "Scrape Prospects" dialog on Email Campaigns
+  presented it without the disclaimer the main tab has. Removed the
+  duplicate; the header button now opens the honest, already-disclosed tab.
+- **Blog generation required a manually-typed topic with no fallback** —
+  added a "Suggest ideas" button (AI-brainstormed, aware of recently
+  published titles to avoid repeats) and made the topic field fully
+  optional: leaving it blank now has the AI pick a topic itself, so
+  "generate on its own" actually works from the UI, not just the backend
+  scheduler. (Email Campaign generation already worked with zero required
+  input — no change needed there.)
 - `inventory_snapshots` had no unique constraint on `shopifyVariantId`, so
   `upsertInventorySnapshot`'s `onDuplicateKeyUpdate` never actually fired —
   every scan (scheduled, manual, or the AI-assistant `scan_inventory` /
@@ -130,6 +175,10 @@ on a broken schema, and more). Everything is on `main`, passes
   replaced with calls to the shared `runInventoryScan()` so all three scan
   entry points stay in sync and none of them silently overwrite real CJ
   supplier data with a stripped-down Shopify-only write.
+- Inventory page now also links to the live storefront product page (not
+  just Shopify Admin) — added a `productHandle` column (migration `0018`)
+  captured during scans, since the numeric product ID alone can't build a
+  working storefront URL.
 
 ## How to work in this repo (for any future chat/agent)
 - Check out `main` locally and edit with local file tools; only use the

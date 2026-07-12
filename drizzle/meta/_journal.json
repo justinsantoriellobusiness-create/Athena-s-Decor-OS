@@ -127,6 +127,13 @@
       "when": 1783642142425,
       "tag": "0017_nostalgic_madrox",
       "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "5",
+      "when": 1783777284743,
+      "tag": "0018_nappy_tony_stark",
+      "breakpoints": true
     }
   ]
 }

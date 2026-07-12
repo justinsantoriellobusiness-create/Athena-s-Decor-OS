@@ -325,6 +325,7 @@ export async function upsertInventorySnapshot(data: typeof inventorySnapshots.$i
     set: {
       title: data.title,
       sku: data.sku,
+      productHandle: data.productHandle,
       supplierStock: data.supplierStock,
       shopifyStock: data.shopifyStock,
       status: data.status,
@@ -1255,6 +1256,7 @@ export type InventoryProductGroup = {
   shopifyProductId: string;
   title: string;
   imageUrl: string | null;
+  productHandle: string | null;
   status: "in_stock" | "low_stock" | "out_of_stock" | "unknown";
   totalStock: number;
   lastCheckedAt: Date | null;
@@ -1272,6 +1274,7 @@ export async function getInventoryGroupedByProduct(): Promise<InventoryProductGr
         shopifyProductId: snap.shopifyProductId,
         title: productTitle,
         imageUrl: snap.imageUrl ?? null,
+        productHandle: snap.productHandle ?? null,
         status: "unknown",
         totalStock: 0,
         lastCheckedAt: snap.lastCheckedAt,
@@ -1282,6 +1285,7 @@ export async function getInventoryGroupedByProduct(): Promise<InventoryProductGr
     group.variants.push(snap);
     group.totalStock += snap.shopifyStock ?? 0;
     if (!group.imageUrl && snap.imageUrl) group.imageUrl = snap.imageUrl;
+    if (!group.productHandle && snap.productHandle) group.productHandle = snap.productHandle;
     if (snap.lastCheckedAt && (!group.lastCheckedAt || snap.lastCheckedAt > group.lastCheckedAt)) {
       group.lastCheckedAt = snap.lastCheckedAt;
     }
