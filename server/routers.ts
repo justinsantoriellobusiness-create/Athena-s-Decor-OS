@@ -236,33 +236,41 @@ const schedulerRouter = router({
 });
 
 // ─── Dashboard Router ─────────────────────────────────────────────────────────
+/**
+ * Shared by dashboardRouter.stats (session-authenticated, for the app's own
+ * UI) and the Jarvis bridge's GET /api/jarvis/status (bearer-token
+ * authenticated, for the Command Center's metrics poll) — one source of
+ * truth for "what's the current state of this business."
+ */
+export async function getDashboardStats() {
+  const [config, settings, keywords, jobs, posts, campaigns] = await Promise.all([
+    getShopifyConfig(),
+    getAllAutomationSettings(),
+    getSeoKeywords(10),
+    getSeoJobs(5),
+    getBlogPosts(5),
+    getAdCampaigns(),
+  ]);
+
+  const activeModules = settings.filter((s) => s.enabled).length;
+  const activeCampaigns = campaigns.filter((c) => c.status === "active").length;
+
+  return {
+    shopifyConnected: config?.isConnected ?? false,
+    shopifyProductCount: config?.productCount ?? 0,
+    activeModules,
+    totalModules: settings.length,
+    keywordCount: keywords.length,
+    recentJobs: jobs,
+    recentPosts: posts,
+    activeCampaigns,
+    totalCampaigns: campaigns.length,
+    automationSettings: settings,
+  };
+}
+
 const dashboardRouter = router({
-  stats: protectedProcedure.query(async () => {
-    const [config, settings, keywords, jobs, posts, campaigns] = await Promise.all([
-      getShopifyConfig(),
-      getAllAutomationSettings(),
-      getSeoKeywords(10),
-      getSeoJobs(5),
-      getBlogPosts(5),
-      getAdCampaigns(),
-    ]);
-
-    const activeModules = settings.filter((s) => s.enabled).length;
-    const activeCampaigns = campaigns.filter((c) => c.status === "active").length;
-
-    return {
-      shopifyConnected: config?.isConnected ?? false,
-      shopifyProductCount: config?.productCount ?? 0,
-      activeModules,
-      totalModules: settings.length,
-      keywordCount: keywords.length,
-      recentJobs: jobs,
-      recentPosts: posts,
-      activeCampaigns,
-      totalCampaigns: campaigns.length,
-      automationSettings: settings,
-    };
-  }),
+  stats: protectedProcedure.query(async () => getDashboardStats()),
 });
 
 // ─── SEO Router ───────────────────────────────────────────────────────────────
@@ -3452,47 +3460,27 @@ Return as JSON array.`;
 });
 
 // ─── Autonomous Router ──────────────────────────────────────────────────────
-const autonomousRouter = router({
-  // Get all autonomous configs for the current user
-  getAll: protectedProcedure.query(async ({ ctx }) => {
-    return getAllAutonomousConfigs(ctx.user.id);
-  }),
+export const AUTONOMOUS_MODULES = ["email_scraper","email_campaigns","backlinker","blog","seo","site_audit","product_sourcing","inventory","ads","accounting","ai_code_assistant"] as const;
+export type AutonomousModule = (typeof AUTONOMOUS_MODULES)[number];
 
-  // Get config for a specific module
-  get: protectedProcedure
-        .input(z.object({ module: z.enum(["email_scraper","email_campaigns","backlinker","blog","seo","site_audit","product_sourcing","inventory","ads","accounting","ai_code_assistant"]) }))
-    .query(async ({ ctx, input }) => {
-      return getAutonomousConfig(ctx.user.id, input.module);
-    }),
-  // Update autonomous config for a module
-  update: protectedProcedure
-    .input(z.object({
-      module: z.enum(["email_scraper","email_campaigns","backlinker","blog","seo","site_audit","product_sourcing","inventory","ads","accounting","ai_code_assistant"]),
-      enabled: z.boolean().optional(),
-      frequencyHours: z.number().int().min(1).max(720).optional(),
-      config: z.record(z.string(), z.any()).optional(),
-    }))
-    .mutation(async ({ ctx, input }) => {
-      const { module, ...data } = input;
-      const updated = await upsertAutonomousConfig(ctx.user.id, module, data);
-      return updated;
-    }),
-
-  // Run a single autonomous cycle for a module immediately
-  runNow: protectedProcedure
-    .input(z.object({ module: z.enum(["email_scraper","email_campaigns","backlinker","blog","seo","site_audit","product_sourcing","inventory","ads","accounting","ai_code_assistant"]), config: z.record(z.string(), z.any()).optional() }))
-    .mutation(async ({ ctx, input }) => {
-      const config = await getAutonomousConfig(ctx.user.id, input.module);
+/**
+ * Runs one autonomous-module cycle. Extracted from the autonomousRouter.runNow
+ * tRPC mutation so the Jarvis bridge (server/jarvisBridge.ts) can trigger the
+ * exact same automation logic via a bearer-token REST call instead of a
+ * session-cookie-authenticated tRPC call.
+ */
+export async function runAutonomousModule(userId: number, module: AutonomousModule) {
+      const config = await getAutonomousConfig(userId, module);
       const moduleConfig = (config?.config as any) || {};
 
-      if (input.module === "email_scraper") {
+      if (module === "email_scraper") {
         // Auto-scrape prospects from configured competitor domains
         const domains: string[] = moduleConfig.competitorDomains || ["wayfair.com", "homedepot.com"];
         const countPerDomain: number = moduleConfig.countPerDomain || 50;
         let totalFound = 0;
         for (const domain of domains.slice(0, 3)) {
           const job = await createProspectScrapJob({
-            userId: ctx.user.id,
+            userId: userId,
             competitorDomain: domain,
             method: moduleConfig.method || "review_sites",
             status: "running",
@@ -3504,18 +3492,18 @@ const autonomousRouter = router({
           const response = await invokeLLM({ messages: [{ role: "user", content: prompt }], response_format: { type: "json_schema", json_schema: { name: "prospects", strict: true, schema: { type: "object", properties: { prospects: { type: "array", items: { type: "object", properties: { email: { type: "string" }, firstName: { type: "string" }, lastName: { type: "string" }, company: { type: "string" }, website: { type: "string" }, tags: { type: "string" }, score: { type: "number" } }, required: ["email","firstName","lastName","company","website","tags","score"], additionalProperties: false } } }, required: ["prospects"], additionalProperties: false } } } });
           const raw = response.choices[0].message.content;
           const parsed = JSON.parse(typeof raw === "string" ? raw : JSON.stringify(raw));
-          const items = (parsed.prospects || []).map((p: any) => ({ ...p, userId: ctx.user.id, source: "competitor_scrape" as const, sourceDetail: domain, status: "active" as const }));
+          const items = (parsed.prospects || []).map((p: any) => ({ ...p, userId: userId, source: "competitor_scrape" as const, sourceDetail: domain, status: "active" as const }));
           const added = await insertEmailProspects(items);
           await updateProspectScrapJob(job.id, { status: "completed", prospectsFound: added, completedAt: new Date() });
           totalFound += added;
         }
-        await upsertAutonomousConfig(ctx.user.id, "email_scraper", { lastAutoRunAt: new Date() });
+        await upsertAutonomousConfig(userId, "email_scraper", { lastAutoRunAt: new Date() });
         return { success: true, message: `Generated ${totalFound} AI prospect ideas modeled on ${domains.length} competitor site(s) — these are AI-invented personas for research, not real contacts, and are excluded from real sends.` };
       }
 
-      if (input.module === "email_campaigns") {
+      if (module === "email_campaigns") {
         // Auto-create and send a campaign to new prospects
-        const prospects = await getEmailProspects(ctx.user.id);
+        const prospects = await getEmailProspects(userId);
         // Exclude "competitor_scrape" prospects — those are AI-generated
         // plausible-sounding profiles, not real scraped people, so their
         // addresses aren't real and shouldn't receive actual sends.
@@ -3525,16 +3513,16 @@ const autonomousRouter = router({
         const subject = moduleConfig.subject || "Discover Our Latest Home Decor Collection";
         const aiResp = await invokeLLM({ messages: [{ role: "system", content: "You are an expert email marketer for a premium home decor brand." }, { role: "user", content: `Write a compelling ${campaignType} email for a home decor store. Subject: "${subject}". Include: warm greeting, 2-3 product highlights with emotional storytelling, clear CTA button, and unsubscribe note. Return JSON: { subject, previewText, bodyHtml, bodyText }` }], response_format: { type: "json_schema", json_schema: { name: "email", strict: true, schema: { type: "object", properties: { subject: { type: "string" }, previewText: { type: "string" }, bodyHtml: { type: "string" }, bodyText: { type: "string" } }, required: ["subject","previewText","bodyHtml","bodyText"], additionalProperties: false } } } });
         const emailContent = JSON.parse(typeof aiResp.choices[0].message.content === "string" ? aiResp.choices[0].message.content : JSON.stringify(aiResp.choices[0].message.content));
-        const campaign = await createEmailCampaign({ userId: ctx.user.id, name: `Auto Campaign ${new Date().toLocaleDateString()}`, ...emailContent, type: campaignType as any, status: "sent", sentAt: new Date(), automationEnabled: false, frequencyDays: 30, totalSent: 0, totalDelivered: 0, totalOpened: 0, totalClicked: 0, totalBounced: 0, totalUnsubscribed: 0, abTestEnabled: false, variantBSubject: null });
+        const campaign = await createEmailCampaign({ userId: userId, name: `Auto Campaign ${new Date().toLocaleDateString()}`, ...emailContent, type: campaignType as any, status: "sent", sentAt: new Date(), automationEnabled: false, frequencyDays: 30, totalSent: 0, totalDelivered: 0, totalOpened: 0, totalClicked: 0, totalBounced: 0, totalUnsubscribed: 0, abTestEnabled: false, variantBSubject: null });
         let delivered = 0;
         for (const prospect of newProspects) {
           const html = emailContent.bodyHtml && ENV.publicBaseUrl
-            ? instrumentEmailHtml(emailContent.bodyHtml, ENV.publicBaseUrl, { campaignId: campaign.id, prospectId: prospect.id, userId: ctx.user.id })
+            ? instrumentEmailHtml(emailContent.bodyHtml, ENV.publicBaseUrl, { campaignId: campaign.id, prospectId: prospect.id, userId: userId })
             : emailContent.bodyHtml;
           const sendResult = isEmailConfigured()
             ? await sendEmail({ to: prospect.email, subject: emailContent.subject, html, text: emailContent.bodyText })
             : { success: false as const, error: "RESEND_API_KEY not configured" };
-          await insertEmailEvent({ campaignId: campaign.id, prospectId: prospect.id, userId: ctx.user.id, event: sendResult.success ? "sent" : "bounced", clickUrl: null, userAgent: null, ipAddress: null, variant: null });
+          await insertEmailEvent({ campaignId: campaign.id, prospectId: prospect.id, userId: userId, event: sendResult.success ? "sent" : "bounced", clickUrl: null, userAgent: null, ipAddress: null, variant: null });
           if (sendResult.success) {
             delivered++;
             await updateEmailProspect(prospect.id, { lastContactedAt: new Date() });
@@ -3544,14 +3532,14 @@ const autonomousRouter = router({
           await sleep(150);
         }
         await updateEmailCampaign(campaign.id, { totalSent: delivered, totalDelivered: delivered });
-        await upsertAutonomousConfig(ctx.user.id, "email_campaigns", { lastAutoRunAt: new Date() });
+        await upsertAutonomousConfig(userId, "email_campaigns", { lastAutoRunAt: new Date() });
         if (!isEmailConfigured()) {
           return { success: false, message: `Campaign created, but RESEND_API_KEY isn't configured — no email was actually sent to any of the ${newProspects.length} prospects.` };
         }
         return { success: true, message: `Sent campaign to ${delivered} of ${newProspects.length} prospects.` };
       }
 
-      if (input.module === "backlinker") {
+      if (module === "backlinker") {
         // Auto-discover best sites and log opportunities
         const niche = moduleConfig.niche || "home decor";
         const count = moduleConfig.discoverCount || 20;
@@ -3559,11 +3547,11 @@ const autonomousRouter = router({
         const response = await invokeLLM({ messages: [{ role: "user", content: prompt }], response_format: { type: "json_schema", json_schema: { name: "sites", strict: true, schema: { type: "object", properties: { sites: { type: "array", items: { type: "object", properties: { siteName: { type: "string" }, siteUrl: { type: "string" }, pageUrl: { type: "string" }, pageTitle: { type: "string" }, type: { type: "string" }, domainAuthority: { type: "number" }, relevanceScore: { type: "number" }, seoValue: { type: "string" }, outreachEmail: { type: "string" }, outreachMessage: { type: "string" }, whyBest: { type: "string" } }, required: ["siteName","siteUrl","pageUrl","pageTitle","type","domainAuthority","relevanceScore","seoValue","outreachEmail","outreachMessage","whyBest"], additionalProperties: false } } }, required: ["sites"], additionalProperties: false } } } });
         const raw = response.choices[0].message.content;
         const parsed = JSON.parse(typeof raw === "string" ? raw : JSON.stringify(raw));
-        await upsertAutonomousConfig(ctx.user.id, "backlinker", { lastAutoRunAt: new Date() });
+        await upsertAutonomousConfig(userId, "backlinker", { lastAutoRunAt: new Date() });
         return { success: true, message: `Discovered ${(parsed.sites || []).length} backlink opportunities.`, sites: parsed.sites || [] };
       }
 
-      if (input.module === "blog") {
+      if (module === "blog") {
         // Auto-generate and publish a blog post
         const keywords: string[] = moduleConfig.keywords || ["home decor ideas", "interior design tips", "affordable furniture"];
         const keyword = keywords[Math.floor(Math.random() * keywords.length)];
@@ -3577,24 +3565,24 @@ const autonomousRouter = router({
           { title: post.title, content: post.content, seoTitle: post.metaTitle, seoDescription: post.metaDescription, excerpt: post.excerpt, tags },
           autoPublish
         );
-        await upsertAutonomousConfig(ctx.user.id, "blog", { lastAutoRunAt: new Date() });
+        await upsertAutonomousConfig(userId, "blog", { lastAutoRunAt: new Date() });
         if (autoPublish && !published) {
           return { success: true, message: `Blog post "${post.title}" saved as a draft — Shopify isn't connected (or the publish call failed), so it wasn't actually published.`, postId };
         }
         return { success: true, message: `Blog post "${post.title}" ${published ? "published to Shopify" : "saved as draft"}.`, postId };
       }
 
-            if (input.module === "seo") {
+            if (module === "seo") {
         // Auto-run keyword research and optimize top products
         const config = await getShopifyConfig();
         const keywordResponse = await invokeLLM({ messages: [{ role: "system", content: "You are an SEO expert for home decor e-commerce. Return JSON only." }, { role: "user", content: `Generate 20 trending SEO keywords for a home decor dropshipping store. Return JSON: { "keywords": [{ "keyword": string, "searchVolume": number, "difficulty": number, "cpc": number, "trend": "up"|"down"|"stable", "category": string }] }` }], response_format: { type: "json_schema", json_schema: { name: "keywords", strict: true, schema: { type: "object", properties: { keywords: { type: "array", items: { type: "object", properties: { keyword: { type: "string" }, searchVolume: { type: "number" }, difficulty: { type: "number" }, cpc: { type: "number" }, trend: { type: "string" }, category: { type: "string" } }, required: ["keyword","searchVolume","difficulty","cpc","trend","category"], additionalProperties: false } } }, required: ["keywords"], additionalProperties: false } } } });
         const kRaw = keywordResponse.choices[0].message.content;
         const kParsed = JSON.parse(typeof kRaw === "string" ? kRaw : JSON.stringify(kRaw));
         await insertSeoKeywords((kParsed.keywords || []).map((k: any) => ({ ...k, source: "auto" })));
-        await upsertAutonomousConfig(ctx.user.id, "seo", { lastAutoRunAt: new Date() });
+        await upsertAutonomousConfig(userId, "seo", { lastAutoRunAt: new Date() });
         return { success: true, message: `SEO: refreshed ${kParsed.keywords?.length || 0} keywords.` };
       }
-      if (input.module === "site_audit") {
+      if (module === "site_audit") {
         // Auto-run a full site audit
         const config = await getShopifyConfig();
         const runId = await createAuditRun({ status: "running" });
@@ -3606,10 +3594,10 @@ const autonomousRouter = router({
         const critical = issues.filter((i: any) => i.severity === "critical").length;
         const warnings = issues.filter((i: any) => i.severity === "warning").length;
         await updateAuditRun(runId, { status: "completed", completedAt: new Date(), issueCount: issues.length, criticalCount: critical, warningCount: warnings, infoCount: issues.length - critical - warnings, overallScore: aParsed.score || 75 });
-        await upsertAutonomousConfig(ctx.user.id, "site_audit", { lastAutoRunAt: new Date() });
+        await upsertAutonomousConfig(userId, "site_audit", { lastAutoRunAt: new Date() });
         return { success: true, message: `Site audit complete: ${issues.length} issues found, score ${aParsed.score || 75}/100.` };
       }
-      if (input.module === "product_sourcing") {
+      if (module === "product_sourcing") {
         // Auto-scrape best-match products from all sources
         const specs = await getSourcingSpecs();
         const activeSpec = specs[0];
@@ -3621,18 +3609,18 @@ const autonomousRouter = router({
         const products = (pParsed.products || []).map((p: any) => ({ ...p, specId: activeSpec.id, importStatus: "pending" as const }));
         if (products.length > 0) await insertSourcedProducts(products);
         await updateSourcingSpec(activeSpec.id, { lastRunAt: new Date(), resultCount: (activeSpec.resultCount || 0) + products.length, status: "completed" });
-        await upsertAutonomousConfig(ctx.user.id, "product_sourcing", { lastAutoRunAt: new Date() });
+        await upsertAutonomousConfig(userId, "product_sourcing", { lastAutoRunAt: new Date() });
         return { success: true, message: `Sourcing: found ${products.length} new best-match products.` };
       }
-      if (input.module === "inventory") {
+      if (module === "inventory") {
         // Auto-sync inventory from Shopify (and real CJ supplier stock where mapped) and flag out-of-stock
         const config = await getShopifyConfig();
         if (!config?.isConnected) return { success: false, message: "Shopify not connected." };
         const result = await runInventoryScan();
-        await upsertAutonomousConfig(ctx.user.id, "inventory", { lastAutoRunAt: new Date() });
+        await upsertAutonomousConfig(userId, "inventory", { lastAutoRunAt: new Date() });
         return { success: true, message: `Inventory synced: ${result.scanned} variants checked, ${result.outOfStockCount} out of stock.` };
       }
-      if (input.module === "ads") {
+      if (module === "ads") {
         // Auto-generate ad creative for top products
         const adsResponse = await invokeLLM({ messages: [{ role: "system", content: "You are a performance marketing expert for home decor e-commerce. Return JSON only." }, { role: "user", content: `Generate 3 high-converting ad creatives for a home decor store. Return JSON: { "ads": [{ "headline": string, "primaryText": string, "description": string, "callToAction": string, "platform": "facebook"|"instagram"|"google", "targetAudience": string, "estimatedRoas": number }] }` }], response_format: { type: "json_schema", json_schema: { name: "ads", strict: true, schema: { type: "object", properties: { ads: { type: "array", items: { type: "object", properties: { headline: { type: "string" }, primaryText: { type: "string" }, description: { type: "string" }, callToAction: { type: "string" }, platform: { type: "string" }, targetAudience: { type: "string" }, estimatedRoas: { type: "number" } }, required: ["headline","primaryText","description","callToAction","platform","targetAudience","estimatedRoas"], additionalProperties: false } } }, required: ["ads"], additionalProperties: false } } } });
         const adRaw = adsResponse.choices[0].message.content;
@@ -3641,17 +3629,17 @@ const autonomousRouter = router({
           const campaignId = await createAdCampaign({ name: `Auto Ad - ${ad.platform} ${new Date().toLocaleDateString()}`, platform: ad.platform as any, status: "draft", objective: "conversions", dailyBudget: 10, totalBudget: 100, startDate: new Date(), endDate: null, targeting: { audience: ad.targetAudience }, impressions: 0, clicks: 0, roas: 0 });
           await createAdCreative({ campaignId, type: "product_image" as const, headline: ad.headline, bodyText: `${ad.primaryText}\n\n${ad.description}`, ctaText: ad.callToAction, status: "generating" });
         }
-        await upsertAutonomousConfig(ctx.user.id, "ads", { lastAutoRunAt: new Date() });
+        await upsertAutonomousConfig(userId, "ads", { lastAutoRunAt: new Date() });
         return { success: true, message: `Ads: generated ${adParsed.ads?.length || 0} new ad creatives.` };
       }
-      if (input.module === "accounting") {
+      if (module === "accounting") {
         // Auto-sync accounting data
         const accounts = await getFinancialAccounts();
         const connected = accounts.filter((a: any) => a.isConnected && a.isActive);
-        await upsertAutonomousConfig(ctx.user.id, "accounting", { lastAutoRunAt: new Date() });
+        await upsertAutonomousConfig(userId, "accounting", { lastAutoRunAt: new Date() });
         return { success: true, message: `Accounting: checked ${connected.length} connected accounts.` };
       }
-      if (input.module === "ai_code_assistant") {
+      if (module === "ai_code_assistant") {
         // AI Code Assistant: scan codebase for issues and optimize
         // This is a meta-module — it reviews the app's own code quality
         const auditResponse = await invokeLLM({
@@ -3681,13 +3669,46 @@ const autonomousRouter = router({
         const parsed = JSON.parse(typeof raw === "string" ? raw : JSON.stringify(raw));
         const critical = (parsed.issues || []).filter((i: any) => i.severity === "critical").length;
         const warnings = (parsed.issues || []).filter((i: any) => i.severity === "warning").length;
-        await upsertAutonomousConfig(ctx.user.id, "ai_code_assistant", {
+        await upsertAutonomousConfig(userId, "ai_code_assistant", {
           lastAutoRunAt: new Date(),
           config: { lastAuditScore: parsed.score, lastAuditSummary: parsed.summary, lastAuditIssues: parsed.issues, critical, warnings },
         });
         return { success: true, message: `Code audit complete: score ${parsed.score}/100, ${critical} critical issues, ${warnings} warnings. ${parsed.summary}` };
       }
       return { success: false, message: "Unknown module" };
+}
+
+const autonomousRouter = router({
+  // Get all autonomous configs for the current user
+  getAll: protectedProcedure.query(async ({ ctx }) => {
+    return getAllAutonomousConfigs(ctx.user.id);
+  }),
+
+  // Get config for a specific module
+  get: protectedProcedure
+        .input(z.object({ module: z.enum(["email_scraper","email_campaigns","backlinker","blog","seo","site_audit","product_sourcing","inventory","ads","accounting","ai_code_assistant"]) }))
+    .query(async ({ ctx, input }) => {
+      return getAutonomousConfig(ctx.user.id, input.module);
+    }),
+  // Update autonomous config for a module
+  update: protectedProcedure
+    .input(z.object({
+      module: z.enum(["email_scraper","email_campaigns","backlinker","blog","seo","site_audit","product_sourcing","inventory","ads","accounting","ai_code_assistant"]),
+      enabled: z.boolean().optional(),
+      frequencyHours: z.number().int().min(1).max(720).optional(),
+      config: z.record(z.string(), z.any()).optional(),
+    }))
+    .mutation(async ({ ctx, input }) => {
+      const { module, ...data } = input;
+      const updated = await upsertAutonomousConfig(ctx.user.id, module, data);
+      return updated;
+    }),
+
+  // Run a single autonomous cycle for a module immediately
+  runNow: protectedProcedure
+    .input(z.object({ module: z.enum(AUTONOMOUS_MODULES), config: z.record(z.string(), z.any()).optional() }))
+    .mutation(async ({ ctx, input }) => {
+      return runAutonomousModule(ctx.user.id, input.module);
     }),
   // Get/set campaign products for email campaigns
   getCampaignProducts: protectedProcedure

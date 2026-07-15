@@ -19,6 +19,11 @@ export const ENV = {
   WIX_ACCOUNT_ID: process.env.WIX_ACCOUNT_ID ?? "",
   adminEmail: process.env.ADMIN_EMAIL ?? "",
   adminPassword: process.env.ADMIN_PASSWORD ?? "",
+  // Shared secret for the Jarvis Command Center bridge (server/jarvisBridge.ts).
+  // Must match the value Jarvis sends as `Authorization: Bearer <...>` — set
+  // from whatever env var Jarvis's registry names for this business's
+  // authEnvVar (e.g. ATHENAS_OS_API_KEY on the Command Center's side).
+  jarvisBridgeApiKey: process.env.JARVIS_BRIDGE_API_KEY ?? "",
   // File storage: any S3-compatible bucket (AWS S3, Cloudflare R2, Backblaze B2, etc).
   s3Bucket: process.env.S3_BUCKET_NAME ?? "",
   s3Region: process.env.S3_REGION ?? "auto",

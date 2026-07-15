@@ -5,6 +5,7 @@ import net from "net";
 import { createExpressMiddleware } from "@trpc/server/adapters/express";
 import { migrate } from "drizzle-orm/mysql2/migrator";
 import { registerPasswordAuthRoutes } from "./passwordAuth";
+import { registerJarvisBridge } from "../jarvisBridge";
 import { registerStorageProxy } from "./storageProxy";
 import { appRouter } from "../routers";
 import { createContext } from "./context";
@@ -60,6 +61,7 @@ async function startServer() {
   app.use(express.urlencoded({ limit: "50mb", extended: true }));
   registerStorageProxy(app);
   registerPasswordAuthRoutes(app);
+  registerJarvisBridge(app);
   registerScheduledRoutes(app);
   registerEmailTrackingRoutes(app);
   await runMigrations();
