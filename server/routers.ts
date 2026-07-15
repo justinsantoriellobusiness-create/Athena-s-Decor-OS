@@ -45,6 +45,7 @@ import {
   getInventorySnapshots,
   getInventorySnapshotByVariant,
   setInventorySnapshotShopifyStock,
+  setInventorySnapshotProductStatus,
   getAdCampaigns,
   createAdCampaign,
   updateAdCampaign,
@@ -1250,6 +1251,7 @@ const inventoryRouter = router({
       try {
         const client = await getShopifyClient(config.storeDomain, decryptCredential(config.accessToken) ?? config.accessToken);
         await client.updateProduct(input.shopifyProductId, { status: "draft" });
+        await setInventorySnapshotProductStatus(input.shopifyProductId, "draft");
         await logActivity({ module: "inventory", level: "info", title: `Manually hid product (marked draft)`, detail: `Shopify product ${input.shopifyProductId}` });
         return { success: true };
       } catch (err: any) {
@@ -1269,6 +1271,7 @@ const inventoryRouter = router({
       try {
         const client = await getShopifyClient(config.storeDomain, decryptCredential(config.accessToken) ?? config.accessToken);
         await client.updateProduct(input.shopifyProductId, { status: "active" });
+        await setInventorySnapshotProductStatus(input.shopifyProductId, "active");
         await logActivity({ module: "inventory", level: "info", title: `Manually republished product (marked active)`, detail: `Shopify product ${input.shopifyProductId}` });
         return { success: true };
       } catch (err: any) {

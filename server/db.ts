@@ -326,6 +326,7 @@ export async function upsertInventorySnapshot(data: typeof inventorySnapshots.$i
       title: data.title,
       sku: data.sku,
       productHandle: data.productHandle,
+      productStatus: data.productStatus,
       supplierStock: data.supplierStock,
       shopifyStock: data.shopifyStock,
       status: data.status,
@@ -347,6 +348,19 @@ export async function getInventorySnapshotByVariant(shopifyVariantId: string): P
   if (!db) return undefined;
   const rows = await db.select().from(inventorySnapshots).where(eq(inventorySnapshots.shopifyVariantId, shopifyVariantId)).limit(1);
   return rows[0];
+}
+
+/**
+ * Sync a product's Shopify visibility (active/draft) onto all its snapshot
+ * rows — called right after hide/republish/auto-draft so the Inventory UI
+ * shows the real current state without waiting for the next full scan.
+ */
+export async function setInventorySnapshotProductStatus(shopifyProductId: string, productStatus: "active" | "draft") {
+  const db = await getDb();
+  if (!db) return;
+  await db.update(inventorySnapshots)
+    .set({ productStatus, updatedAt: new Date() })
+    .where(eq(inventorySnapshots.shopifyProductId, shopifyProductId));
 }
 
 /** Record a manual stock change (Shopify side only — supplier fields are left as last-scanned). */
@@ -1257,6 +1271,7 @@ export type InventoryProductGroup = {
   title: string;
   imageUrl: string | null;
   productHandle: string | null;
+  productStatus: string | null;
   status: "in_stock" | "low_stock" | "out_of_stock" | "unknown";
   totalStock: number;
   lastCheckedAt: Date | null;
@@ -1275,6 +1290,7 @@ export async function getInventoryGroupedByProduct(): Promise<InventoryProductGr
         title: productTitle,
         imageUrl: snap.imageUrl ?? null,
         productHandle: snap.productHandle ?? null,
+        productStatus: snap.productStatus ?? null,
         status: "unknown",
         totalStock: 0,
         lastCheckedAt: snap.lastCheckedAt,
@@ -1286,6 +1302,7 @@ export async function getInventoryGroupedByProduct(): Promise<InventoryProductGr
     group.totalStock += snap.shopifyStock ?? 0;
     if (!group.imageUrl && snap.imageUrl) group.imageUrl = snap.imageUrl;
     if (!group.productHandle && snap.productHandle) group.productHandle = snap.productHandle;
+    if (!group.productStatus && snap.productStatus) group.productStatus = snap.productStatus;
     if (snap.lastCheckedAt && (!group.lastCheckedAt || snap.lastCheckedAt > group.lastCheckedAt)) {
       group.lastCheckedAt = snap.lastCheckedAt;
     }

@@ -103,6 +103,44 @@ Anthropic Claude for all LLM calls.
   products or fake links — everything comes straight from the connected
   store.
 
+## Round 4 — production-outage root causes + UX fixes
+User reported every automation erroring. Two env/credential root causes
+found from the Activity Feed errors, plus a page-crash bug:
+- **`ANTHROPIC_API_KEY` in Railway is corrupted** — contains a bullet
+  character (`•`, code 8226) at position 8, almost certainly pasted from a
+  masked field. This crashed EVERY LLM automation (blog, SEO, sourcing,
+  email content, audit) with the cryptic "Cannot convert argument to a
+  ByteString" error. Code now validates the key upfront (`llm.ts`,
+  `imageGeneration.ts` for `OPENAI_API_KEY`, `email.ts` already did
+  `RESEND_API_KEY`) and returns an actionable message naming the exact env
+  var. **The user must re-paste the real key in Railway — code cannot fix
+  a corrupted env var.**
+- **Shopify token expiry** — client-credentials tokens live ~24h but were
+  only minted at boot (`seed.ts`), so everything 401'd from ~a day after
+  the last redeploy (user's feed shows 2:00 AM sync succeeding, 8 AM
+  failing). `ShopifyClient` now auto-refreshes on 401 (single-flight),
+  persists the fresh token, and retries the request once.
+- **Accounting page crashed the whole app** — `<SelectItem value="">` in
+  the Transactions tab; Radix Select throws a hard render error on
+  empty-string values, and the only ErrorBoundary was app-level. Fixed the
+  sentinel value AND added a per-page ErrorBoundary inside AppLayout so a
+  page crash can never blank the whole site again.
+- **AutoDS removed from all UI** (owner discontinued the account):
+  Integrations card, Sourcing connection card, both Push-to-AutoDS buttons.
+- **Scheduler**: Enable All / Disable All buttons; presets and labels now
+  ET-based ("Daily at 9am ET" converts to the right UTC cron on save);
+  raw cron strings ("0 9 * * *") no longer shown anywhere — SEO/Blog/
+  Inventory/Ads toggle chips use the shared `client/src/lib/cron.ts` label
+  helper.
+- **Inventory hidden-product visibility**: new `productStatus` column
+  (migration `0020`) tracks Shopify active/draft per product; UI gets a
+  "Hidden from Store" stat/filter, a Hidden badge, and Hide/Unhide now
+  follows real visibility (previously a hidden in-stock product had no
+  unhide button anywhere). Manual hide/republish and the auto-draft path
+  all sync the flag immediately.
+- **Dashboard refresh button** restyled from muted grey (read as disabled)
+  to active, with a spinner + disabled state while refetching.
+
 ## Full code audit — completed
 A 15-module line-by-line audit was done and every finding fixed (auth
 rate-limiting, Shopify API rate-limit/timeout wrapping + fulfillment

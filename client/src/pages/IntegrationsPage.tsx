@@ -111,20 +111,7 @@ const PLATFORMS: PlatformConfig[] = [
     instructions: "Go to TikTok for Business → Marketing API → My Apps → Create App → Get Authorized → Copy the long-lived Access Token and your Advertiser ID.",
     helpUrl: "https://ads.tiktok.com/marketing_api/docs?id=1738855176671234",
   },
-  {
-    id: "autods",
-    name: "AutoDS",
-    description: "Push sourced products directly to your AutoDS import list for automated fulfillment.",
-    icon: Truck,
-    color: "text-purple-500",
-    category: "fulfillment",
-    fields: [
-      { key: "apiKey", label: "API Key", placeholder: "your-autods-api-key", type: "password", required: true },
-      { key: "storeId", label: "Store ID", placeholder: "12345", required: true },
-    ],
-    instructions: "Go to AutoDS Dashboard → Settings → API → Generate API Key. Your Store ID is visible in the URL when you're in your store dashboard.",
-    helpUrl: "https://help.autods.com/en/articles/api",
-  },
+  // AutoDS removed — account/connection discontinued by the owner.
   {
     id: "cj_dropshipping",
     name: "CJ Dropshipping",

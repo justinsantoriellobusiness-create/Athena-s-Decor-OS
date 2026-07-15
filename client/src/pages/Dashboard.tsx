@@ -33,7 +33,8 @@ function StatusBadge({ status }: { status: string }) {
 export default function Dashboard() {
   const { user } = useAuth();
   const [, setLocation] = useLocation();
-  const { data, isLoading, refetch } = trpc.dashboard.stats.useQuery();
+  const utils = trpc.useUtils();
+  const { data, isLoading, refetch, isFetching } = trpc.dashboard.stats.useQuery();
 
   const getModuleStatus = (key: string) => {
     if (!data?.automationSettings) return "idle";
@@ -59,14 +60,18 @@ export default function Dashboard() {
           </h1>
           <p className="text-sm text-muted-foreground mt-1">Your automation platform overview</p>
         </div>
+        {/* Previously styled in muted grey with no click feedback, which read
+            as a disabled/broken button. Now visibly active and spins while
+            refetching everything the dashboard shows. */}
         <Button
           variant="outline"
           size="sm"
-          onClick={() => refetch()}
-          className="gap-2 border-border/50 text-muted-foreground hover:text-foreground"
+          onClick={() => { refetch(); utils.activity.getRecent.invalidate(); }}
+          disabled={isFetching}
+          className="gap-2 border-border/50 text-foreground hover:bg-secondary/50"
         >
-          <RefreshCw className="w-3.5 h-3.5" />
-          Refresh
+          <RefreshCw className={cn("w-3.5 h-3.5", isFetching && "animate-spin")} />
+          {isFetching ? "Refreshing…" : "Refresh"}
         </Button>
       </div>
 

@@ -1,3 +1,4 @@
+import { cronLabel } from "@/lib/cron";
 import { useState } from "react";
 import { ToggleLeft, ToggleRight, Zap } from "lucide-react";
 import { trpc } from "@/lib/trpc";
@@ -66,7 +67,7 @@ export default function BlogPage() {
             <Zap className="w-4 h-4 text-violet-400" />
             <div>
               <p className="text-xs text-white/70 font-medium">Auto-Generate</p>
-              <p className="text-[10px] text-white/30">{blogSetting.cronExpression || "Weekly Mon 8am"}</p>
+              <p className="text-[10px] text-white/30">{cronLabel(blogSetting.cronExpression)}</p>
             </div>
             <button onClick={() => updateSchedulerMutation.mutate({ module: "blog", enabled: !blogSetting.enabled })}>
               {blogSetting.enabled

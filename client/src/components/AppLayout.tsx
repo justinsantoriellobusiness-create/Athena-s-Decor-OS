@@ -8,6 +8,7 @@ import {
   Link2, Mail, Plug, Activity, Truck,
 } from "lucide-react";
 import { trpc } from "@/lib/trpc";
+import ErrorBoundary from "@/components/ErrorBoundary";
 
 const navSections = [
   {
@@ -157,8 +158,11 @@ export default function AppLayout({ children, noPadding }: AppLayoutProps) {
       </aside>
 
       {/* Main */}
+      {/* Per-page boundary: a crash inside one page shows its error inline
+          while the sidebar/nav stay usable — previously any page exception
+          (e.g. the Accounting tab crash) replaced the entire app. */}
       <main className={cn("flex-1 overflow-auto", !noPadding && "")}>
-        {children}
+        <ErrorBoundary>{children}</ErrorBoundary>
       </main>
     </div>
   );

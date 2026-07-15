@@ -29,6 +29,16 @@ function assertConfigured() {
       "No image generation provider is configured. Set OPENAI_API_KEY to enable AI image generation (Anthropic does not offer one)."
     );
   }
+  // Header values must be Latin-1; a key pasted from a masked field can carry
+  // a bullet (•, 8226) that makes fetch() throw a cryptic ByteString error.
+  for (let i = 0; i < ENV.openaiApiKey.length; i++) {
+    const code = ENV.openaiApiKey.charCodeAt(i);
+    if (code > 255) {
+      throw new Error(
+        `OPENAI_API_KEY contains an invalid character (code ${code} at position ${i}) — corrupted copy-paste. Reveal and re-copy the real key from the provider dashboard, re-paste into Railway → Variables → OPENAI_API_KEY, and redeploy.`
+      );
+    }
+  }
 }
 
 async function extractImageBuffer(response: Response): Promise<{ buffer: Buffer; mimeType: string }> {
