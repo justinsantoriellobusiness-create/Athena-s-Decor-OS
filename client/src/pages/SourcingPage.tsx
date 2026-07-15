@@ -92,10 +92,6 @@ export default function SourcingPage() {
     },
     onError: (e) => { setBulkImportRunning(false); toast.error(e.message); },
   });
-  const pushToAutodsMutation = trpc.sourcing.pushToAutods.useMutation({
-    onSuccess: (d) => toast.success(`Pushed ${d.pushed} products to AutoDS`),
-    onError: (e) => toast.error(e.message),
-  });
   const pushToCjMutation = trpc.sourcing.pushToCjFavorites.useMutation({
     onSuccess: (d) => toast.success(`Added ${d.pushed} products to CJ Favorites`),
     onError: (e) => toast.error(e.message),
@@ -104,7 +100,6 @@ export default function SourcingPage() {
   const specs = specsQuery.data || [];
   const products = resultsQuery.data || [];
   const appCreds = appCredsQuery.data || [];
-  const autodsConnected = appCreds.find((c) => c.app === "autods")?.isConnected;
   const cjConnected = appCreds.find((c) => c.app === "cj")?.isConnected;
 
   const toggleSource = (src: string) => {
@@ -128,11 +123,6 @@ export default function SourcingPage() {
     if (!selectedSpec) return;
     setBulkImportRunning(true);
     bulkImportMutation.mutate({ specId: selectedSpec, bestPicksOnly, autoOptimize });
-  };
-
-  const handlePushToAutods = (ids?: number[]) => {
-    const productIds = ids || (selectedProducts.size > 0 ? Array.from(selectedProducts) : products.map((p) => p.id));
-    pushToAutodsMutation.mutate({ productIds });
   };
 
   const handlePushToCj = (ids?: number[]) => {
@@ -244,18 +234,6 @@ export default function SourcingPage() {
                 >
                   {bulkImportMutation.isPending ? <RefreshCw className="w-4 h-4 mr-2 animate-spin" /> : <Download className="w-4 h-4 mr-2" />}
                   Bulk Import {pendingCount > 0 ? `(${pendingCount})` : ""}
-                </Button>
-
-                <Button
-                  size="sm"
-                  variant="outline"
-                  onClick={() => handlePushToAutods()}
-                  disabled={pushToAutodsMutation.isPending || !autodsConnected}
-                  title={!autodsConnected ? "Connect AutoDS in App Connections first" : "Push selected or all to AutoDS"}
-                  className={`border-white/10 text-white/70 hover:text-white ${!autodsConnected ? "opacity-40 cursor-not-allowed" : ""}`}
-                >
-                  {pushToAutodsMutation.isPending ? <RefreshCw className="w-4 h-4 mr-2 animate-spin" /> : <Send className="w-4 h-4 mr-2" />}
-                  Push to AutoDS
                 </Button>
 
                 <Button
@@ -418,18 +396,6 @@ export default function SourcingPage() {
                             </Button>
                           )}
 
-                          {autodsConnected && (
-                            <Button
-                              size="sm"
-                              variant="outline"
-                              className="h-7 px-2 border-white/10 text-white/50 hover:text-white"
-                              title="Push to AutoDS"
-                              onClick={() => handlePushToAutods([product.id])}
-                              disabled={pushToAutodsMutation.isPending}
-                            >
-                              <Send className="w-3 h-3" />
-                            </Button>
-                          )}
                           {cjConnected && product.source === "cj" && (
                             <Button
                               size="sm"
@@ -520,18 +486,7 @@ export default function SourcingPage() {
         {/* ── App Connections Tab ── */}
         <TabsContent value="settings" className="space-y-4 mt-4">
           <p className="text-white/40 text-sm">Connect your sourcing apps to push products directly without manual copy-paste.</p>
-          <AppConnectionCard
-            app="autods"
-            title="AutoDS"
-            description="Push products directly to your AutoDS import list for automated dropshipping fulfillment"
-            icon="🤖"
-            isConnected={!!autodsConnected}
-            fields={[
-              { key: "apiKey", label: "API Key", placeholder: "Your AutoDS API key", type: "password" },
-              { key: "storeId", label: "Store ID", placeholder: "Your AutoDS Store ID", type: "text" },
-            ]}
-            onRefetch={() => appCredsQuery.refetch()}
-          />
+          {/* AutoDS removed — account/connection discontinued by the owner. */}
           <AppConnectionCard
             app="cj"
             title="CJ Dropshipping"
@@ -763,11 +718,8 @@ function AppConnectionCard({
                 </Button>
               )}
             </div>
-            {app === "autods" && (
-              <p className="text-white/30 text-xs">Get your API key from AutoDS Dashboard → Settings → API Access</p>
-            )}
             {app === "cj" && (
-              <p className="text-white/30 text-xs">Get your Access Token from CJ Developer Portal → My Apps → Access Token</p>
+              <p className="text-white/30 text-xs">Get your API Key from CJ Developer Portal → My Apps (the Account Email is the one you log into CJ with)</p>
             )}
           </div>
         )}

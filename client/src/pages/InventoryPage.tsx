@@ -1,3 +1,4 @@
+import { cronLabel } from "@/lib/cron";
 import { useState } from "react";
 import { trpc } from "@/lib/trpc";
 import { toast } from "sonner";
@@ -101,7 +102,7 @@ function VariantRow({
 }
 
 export default function InventoryPage() {
-  const [filter, setFilter] = useState<"all" | "in_stock" | "low_stock" | "out_of_stock">("all");
+  const [filter, setFilter] = useState<"all" | "in_stock" | "low_stock" | "out_of_stock" | "hidden">("all");
   const [search, setSearch] = useState("");
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [lastScan, setLastScan] = useState<{
@@ -148,8 +149,9 @@ export default function InventoryPage() {
   });
 
   const allGroups = groups || [];
+  const isHidden = (g: any) => g.productStatus === "draft";
   const filtered = allGroups
-    .filter((g: any) => filter === "all" || g.status === filter)
+    .filter((g: any) => filter === "all" || (filter === "hidden" ? isHidden(g) : g.status === filter))
     .filter((g: any) => !search || g.title.toLowerCase().includes(search.toLowerCase()));
 
   const counts = {
@@ -157,6 +159,7 @@ export default function InventoryPage() {
     in_stock: allGroups.filter((g: any) => g.status === "in_stock").length,
     low_stock: allGroups.filter((g: any) => g.status === "low_stock").length,
     out_of_stock: allGroups.filter((g: any) => g.status === "out_of_stock").length,
+    hidden: allGroups.filter(isHidden).length,
   };
 
   const { data: settings } = trpc.scheduler.getAll.useQuery();
@@ -190,7 +193,7 @@ export default function InventoryPage() {
               <Zap className="w-4 h-4 text-emerald-400" />
               <div>
                 <p className="text-xs text-white/70 font-medium">Auto-Sync</p>
-                <p className="text-[10px] text-white/30">{invSetting.cronExpression || "Every 6h"}</p>
+                <p className="text-[10px] text-white/30">{cronLabel(invSetting.cronExpression)}</p>
               </div>
               <button onClick={() => updateScheduler.mutate({ module: "inventory", enabled: !invSetting.enabled })}>
                 {invSetting.enabled
@@ -264,12 +267,13 @@ export default function InventoryPage() {
       )}
 
       {/* Stats */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+      <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
         {[
           { key: "all", label: "Total Products", color: "oklch(0.55 0.01 265)", icon: Package },
           { key: "in_stock", label: "In Stock", color: "oklch(0.65 0.18 145)", icon: CheckCircle2 },
           { key: "low_stock", label: "Low Stock", color: "oklch(0.78 0.15 65)", icon: AlertTriangle },
           { key: "out_of_stock", label: "Out of Stock", color: "oklch(0.6 0.22 25)", icon: XCircle },
+          { key: "hidden", label: "Hidden from Store", color: "oklch(0.6 0.15 300)", icon: EyeOff },
         ].map(({ key, label, color, icon: Icon }) => (
           <button
             key={key}
@@ -326,8 +330,13 @@ export default function InventoryPage() {
                 )}
                 <div className="p-3 space-y-2">
                   <p className="text-xs font-medium text-foreground line-clamp-2 leading-snug min-h-[2rem]">{group.title}</p>
-                  <div className="flex items-center justify-between">
-                    <StockBadge status={group.status} />
+                  <div className="flex items-center justify-between gap-1 flex-wrap">
+                    <div className="flex items-center gap-1 flex-wrap">
+                      <StockBadge status={group.status} />
+                      {group.productStatus === "draft" && (
+                        <span className="badge-info"><EyeOff className="w-3 h-3" />Hidden</span>
+                      )}
+                    </div>
                     <span className="text-[10px] text-muted-foreground">{group.totalStock} units</span>
                   </div>
                   {hasSupplierMismatch && (
@@ -355,14 +364,20 @@ export default function InventoryPage() {
                     </button>
                   )}
                   <div className="flex items-center gap-1.5 pt-1">
-                    {group.status === "out_of_stock" ? (
+                    {/* Hide/Unhide follows the product's real Shopify visibility
+                        (active/draft), not its stock status — previously "Unhide"
+                        only appeared on out-of-stock products, so a hidden
+                        in-stock product had no way back. Falls back to the old
+                        stock-based rule for rows scanned before productStatus
+                        existed. */}
+                    {(group.productStatus ? group.productStatus === "draft" : group.status === "out_of_stock") ? (
                       <Button size="sm" variant="outline"
                         className="flex-1 text-[10px] h-7 px-2 border-emerald-500/30 text-emerald-400 hover:bg-emerald-500/10"
                         onClick={() => republishMutation.mutate({ shopifyProductId: group.shopifyProductId })}
                         disabled={republishMutation.isPending}>
                         {republishMutation.isPending && republishMutation.variables?.shopifyProductId === group.shopifyProductId
                           ? <Loader2 className="w-3 h-3 mr-1 animate-spin" /> : <Eye className="w-3 h-3 mr-1" />}
-                        Republish
+                        Unhide
                       </Button>
                     ) : (
                       <Button size="sm" variant="outline"

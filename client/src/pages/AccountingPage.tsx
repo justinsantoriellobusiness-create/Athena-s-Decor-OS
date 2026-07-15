@@ -337,7 +337,10 @@ function PLTab({ year }: { year: number }) {
 // ─── Transactions Ledger ──────────────────────────────────────────────────────
 function TransactionsTab({ accounts }: { accounts: any[] }) {
   const [selectedAccount, setSelectedAccount] = useState<number | undefined>();
-  const [typeFilter, setTypeFilter] = useState<string>("");
+  // "all" sentinel, never "" — Radix Select throws a hard render error for
+  // empty-string item values, which crashed this entire page (and with it
+  // the whole app via the top-level ErrorBoundary) whenever this tab opened.
+  const [typeFilter, setTypeFilter] = useState<string>("all");
   const [addOpen, setAddOpen] = useState(false);
   const [form, setForm] = useState({
     accountId: accounts[0]?.id ?? 0,
@@ -354,7 +357,7 @@ function TransactionsTab({ accounts }: { accounts: any[] }) {
 
   const { data: txns, isLoading, refetch } = trpc.accounting.getTransactions.useQuery({
     accountId: selectedAccount,
-    type: typeFilter as any || undefined,
+    type: typeFilter === "all" ? undefined : (typeFilter as any),
     limit: 200,
   });
 
@@ -400,7 +403,7 @@ function TransactionsTab({ accounts }: { accounts: any[] }) {
             <SelectValue placeholder="All Types" />
           </SelectTrigger>
           <SelectContent>
-            <SelectItem value="">All Types</SelectItem>
+            <SelectItem value="all">All Types</SelectItem>
             <SelectItem value="income">Income</SelectItem>
             <SelectItem value="expense">Expense</SelectItem>
             <SelectItem value="fee">Fee</SelectItem>

@@ -73,6 +73,74 @@ Anthropic Claude for all LLM calls.
   hand. DSers orders are unaffected (DSers manages its own payment/UI, not
   something Athena pays for directly).
 
+## Round 3 additions
+- **CJ low-balance proactive alert**: `runAutoFulfillment()` (every 30 min,
+  or manual Run Now) now checks the CJ wallet balance itself and calls
+  `notifyOwner()` the moment it drops below `CJ_LOW_BALANCE_THRESHOLD`
+  (`shared/const.ts`, currently $20 — shared with the Fulfillment page's UI
+  warning so they can't drift). Fires once per dip (tracked via
+  `automationSettings.config.cjLowBalanceAlerted`), resets when balance
+  recovers, so it doesn't spam every 30 minutes while low.
+- **Real sales analytics** (Analytics page, new "Sales Performance" section
+  at the top): revenue/orders/AOV for the last 7d and 30d, a daily revenue
+  chart, and top products by revenue — pulled live from Shopify orders
+  (`analytics.getSalesOverview`), not from automation-activity counts like
+  the rest of that page. Also surfaces a real Net Profit figure from
+  Accounting's existing `computePL` for the same 30-day window.
+- **Email campaign subject-line A/B testing**: optional second subject line
+  per campaign (`abTestEnabled`/`variantBSubject` on `email_campaigns`,
+  migration `0019`); sending randomly splits the recipient list in half,
+  each half gets one subject (body is identical for both — subject-only
+  test, by design, to keep this shippable and reliable). Opens/clicks are
+  attributed per variant via a `variant` column on `email_events`, carried
+  through the tracking pixel/click URLs as a `?v=a|b` query param. Results
+  (sent/opened/open rate/clicked per variant, with a trophy on the leader)
+  show inline on the campaign card once sent.
+- **Email campaigns: real product images**: an "Add Products" picker in the
+  campaign composer pulls the live Shopify catalog (`shopify.getProducts`,
+  already existed), lets you multi-select, and inserts real product image +
+  title + price + storefront-link cards into the HTML body. No invented
+  products or fake links — everything comes straight from the connected
+  store.
+
+## Round 4 — production-outage root causes + UX fixes
+User reported every automation erroring. Two env/credential root causes
+found from the Activity Feed errors, plus a page-crash bug:
+- **`ANTHROPIC_API_KEY` in Railway is corrupted** — contains a bullet
+  character (`•`, code 8226) at position 8, almost certainly pasted from a
+  masked field. This crashed EVERY LLM automation (blog, SEO, sourcing,
+  email content, audit) with the cryptic "Cannot convert argument to a
+  ByteString" error. Code now validates the key upfront (`llm.ts`,
+  `imageGeneration.ts` for `OPENAI_API_KEY`, `email.ts` already did
+  `RESEND_API_KEY`) and returns an actionable message naming the exact env
+  var. **The user must re-paste the real key in Railway — code cannot fix
+  a corrupted env var.**
+- **Shopify token expiry** — client-credentials tokens live ~24h but were
+  only minted at boot (`seed.ts`), so everything 401'd from ~a day after
+  the last redeploy (user's feed shows 2:00 AM sync succeeding, 8 AM
+  failing). `ShopifyClient` now auto-refreshes on 401 (single-flight),
+  persists the fresh token, and retries the request once.
+- **Accounting page crashed the whole app** — `<SelectItem value="">` in
+  the Transactions tab; Radix Select throws a hard render error on
+  empty-string values, and the only ErrorBoundary was app-level. Fixed the
+  sentinel value AND added a per-page ErrorBoundary inside AppLayout so a
+  page crash can never blank the whole site again.
+- **AutoDS removed from all UI** (owner discontinued the account):
+  Integrations card, Sourcing connection card, both Push-to-AutoDS buttons.
+- **Scheduler**: Enable All / Disable All buttons; presets and labels now
+  ET-based ("Daily at 9am ET" converts to the right UTC cron on save);
+  raw cron strings ("0 9 * * *") no longer shown anywhere — SEO/Blog/
+  Inventory/Ads toggle chips use the shared `client/src/lib/cron.ts` label
+  helper.
+- **Inventory hidden-product visibility**: new `productStatus` column
+  (migration `0020`) tracks Shopify active/draft per product; UI gets a
+  "Hidden from Store" stat/filter, a Hidden badge, and Hide/Unhide now
+  follows real visibility (previously a hidden in-stock product had no
+  unhide button anywhere). Manual hide/republish and the auto-draft path
+  all sync the flag immediately.
+- **Dashboard refresh button** restyled from muted grey (read as disabled)
+  to active, with a spinner + disabled state while refetching.
+
 ## Full code audit — completed
 A 15-module line-by-line audit was done and every finding fixed (auth
 rate-limiting, Shopify API rate-limit/timeout wrapping + fulfillment
@@ -85,6 +153,15 @@ on a broken schema, and more). Everything is on `main`, passes
 `npx tsc --noEmit` with 0 errors and `npm run build` cleanly.
 
 ## Known gaps / next candidates (not yet built)
+0. **Multi-channel selling (Amazon, Etsy, TikTok Shop, Facebook Shop) — requested, not started.**
+   This is a much bigger scope than anything else on this list: each
+   platform needs its own developer account/API approval from the store
+   owner (same category of blocker as eBay below, times four), plus its own
+   product-sync, order-sync, and fulfillment-routing logic roughly on par
+   with the existing Shopify+CJ+DSers integration. Needs a real scoping
+   conversation before starting — which platform first, and the owner
+   obtaining that platform's developer credentials — rather than being
+   built speculatively.
 1. **Real supplier-stock sync and CJ wallet balance — endpoints still not
    confirmed against a live CJ account.** `product/stock/queryByVid` and
    `shopping/pay/getBalance` were pieced together from CJ's docs/community

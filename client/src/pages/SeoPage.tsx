@@ -1,3 +1,4 @@
+import { cronLabel } from "@/lib/cron";
 import { useState, useEffect } from "react";
 import { trpc } from "@/lib/trpc";
 import { toast } from "sonner";
@@ -311,7 +312,7 @@ export default function SeoPage() {
             <Zap className="w-4 h-4 text-amber-400" />
             <div>
               <p className="text-xs text-amber-400 font-medium">Auto-SEO</p>
-              <p className="text-xs text-white/30">{seoSetting.cronExpression || "Daily"}</p>
+              <p className="text-xs text-white/30">{cronLabel(seoSetting.cronExpression) }</p>
             </div>
             <button
               onClick={() => updateScheduler.mutate({ module: "seo", enabled: !seoSetting.enabled })}

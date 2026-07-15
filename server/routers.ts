@@ -45,6 +45,7 @@ import {
   getInventorySnapshots,
   getInventorySnapshotByVariant,
   setInventorySnapshotShopifyStock,
+  setInventorySnapshotProductStatus,
   getAdCampaigns,
   createAdCampaign,
   updateAdCampaign,
@@ -1250,6 +1251,7 @@ const inventoryRouter = router({
       try {
         const client = await getShopifyClient(config.storeDomain, decryptCredential(config.accessToken) ?? config.accessToken);
         await client.updateProduct(input.shopifyProductId, { status: "draft" });
+        await setInventorySnapshotProductStatus(input.shopifyProductId, "draft");
         await logActivity({ module: "inventory", level: "info", title: `Manually hid product (marked draft)`, detail: `Shopify product ${input.shopifyProductId}` });
         return { success: true };
       } catch (err: any) {
@@ -1269,6 +1271,7 @@ const inventoryRouter = router({
       try {
         const client = await getShopifyClient(config.storeDomain, decryptCredential(config.accessToken) ?? config.accessToken);
         await client.updateProduct(input.shopifyProductId, { status: "active" });
+        await setInventorySnapshotProductStatus(input.shopifyProductId, "active");
         await logActivity({ module: "inventory", level: "info", title: `Manually republished product (marked active)`, detail: `Shopify product ${input.shopifyProductId}` });
         return { success: true };
       } catch (err: any) {
@@ -1760,6 +1763,73 @@ const analyticsRouter = router({
       trend: k.trend,
       cpc: k.cpc,
     }));
+  }),
+
+  // Real business performance from live Shopify orders — the rest of this
+  // router is all automation-activity counts (blog posts, audit scores,
+  // etc.), nothing about actual sales. This is a separate, live read
+  // straight from Shopify so it's accurate even if nobody's run the
+  // Accounting sync — accounting.getPL gives the profit lens once that has.
+  getSalesOverview: protectedProcedure.query(async () => {
+    const config = await getShopifyConfig();
+    if (!config?.isConnected) return { connected: false as const };
+
+    const client = await getShopifyClient(config.storeDomain, decryptCredential(config.accessToken) ?? config.accessToken);
+    const { orders } = await client.getOrders(250, "any");
+
+    const now = Date.now();
+    const DAY_MS = 24 * 3600 * 1000;
+    const dailyBuckets = new Map<string, { revenue: number; orders: number }>();
+    const productTotals = new Map<string, { title: string; revenue: number; units: number }>();
+    let revenue7d = 0, orders7d = 0, revenue30d = 0, orders30d = 0;
+
+    for (const order of orders) {
+      const total = Number(order.total_price ?? 0);
+      const createdAt = new Date(order.created_at).getTime();
+      const ageMs = now - createdAt;
+      const dayKey = order.created_at.slice(0, 10);
+
+      const bucket = dailyBuckets.get(dayKey) ?? { revenue: 0, orders: 0 };
+      bucket.revenue += total;
+      bucket.orders += 1;
+      dailyBuckets.set(dayKey, bucket);
+
+      if (ageMs <= 30 * DAY_MS) { revenue30d += total; orders30d++; }
+      if (ageMs <= 7 * DAY_MS) { revenue7d += total; orders7d++; }
+
+      if (ageMs <= 30 * DAY_MS) {
+        for (const li of (order.line_items ?? [])) {
+          const key = String(li.product_id ?? li.title);
+          const p = productTotals.get(key) ?? { title: li.title ?? "Unknown product", revenue: 0, units: 0 };
+          p.revenue += Number(li.price ?? 0) * (li.quantity ?? 1);
+          p.units += li.quantity ?? 1;
+          productTotals.set(key, p);
+        }
+      }
+    }
+
+    const dailySeries = Array.from(dailyBuckets.entries())
+      .sort(([a], [b]) => a.localeCompare(b))
+      .slice(-30)
+      .map(([date, v]) => ({ date, revenue: Math.round(v.revenue * 100) / 100, orders: v.orders }));
+
+    const topProducts = Array.from(productTotals.values())
+      .sort((a, b) => b.revenue - a.revenue)
+      .slice(0, 8)
+      .map(p => ({ title: p.title, revenue: Math.round(p.revenue * 100) / 100, units: p.units }));
+
+    return {
+      connected: true as const,
+      ordersSampled: orders.length,
+      revenue7d: Math.round(revenue7d * 100) / 100,
+      orders7d,
+      aov7d: orders7d > 0 ? Math.round((revenue7d / orders7d) * 100) / 100 : 0,
+      revenue30d: Math.round(revenue30d * 100) / 100,
+      orders30d,
+      aov30d: orders30d > 0 ? Math.round((revenue30d / orders30d) * 100) / 100 : 0,
+      dailySeries,
+      topProducts,
+    };
   }),
 });
 
@@ -2839,6 +2909,29 @@ const emailCampaignsRouter = router({
       return { campaign, stats, events };
     }),
 
+  // Per-variant breakdown for a subject-line A/B test, computed from
+  // email_events.variant so it's always derived from what actually
+  // happened rather than a separately-maintained counter that could drift.
+  getVariantStats: protectedProcedure
+    .input(z.object({ campaignId: z.number() }))
+    .query(async ({ ctx, input }) => {
+      const campaign = await getEmailCampaign(input.campaignId);
+      if (!campaign || campaign.userId !== ctx.user.id) throw new TRPCError({ code: "NOT_FOUND" });
+      const events = await getEmailEvents(input.campaignId);
+      const forVariant = (v: "a" | "b") => {
+        const sent = events.filter(e => e.variant === v && (e.event === "sent")).length;
+        const opened = new Set(events.filter(e => e.variant === v && e.event === "opened").map(e => e.prospectId)).size;
+        const clicked = new Set(events.filter(e => e.variant === v && e.event === "clicked").map(e => e.prospectId)).size;
+        return { sent, opened, clicked, openRate: sent > 0 ? Math.round((opened / sent) * 1000) / 10 : 0 };
+      };
+      return {
+        subjectA: campaign.subject,
+        subjectB: campaign.variantBSubject,
+        a: forVariant("a"),
+        b: forVariant("b"),
+      };
+    }),
+
   createCampaign: protectedProcedure
     .input(z.object({
       name: z.string().min(1),
@@ -2853,9 +2946,11 @@ const emailCampaignsRouter = router({
       automationEnabled: z.boolean().default(false),
       frequencyDays: z.number().int().min(1).max(365).optional(),
       scheduledAt: z.date().optional(),
+      abTestEnabled: z.boolean().default(false),
+      variantBSubject: z.string().optional(),
     }))
     .mutation(async ({ ctx, input }) => {
-      return createEmailCampaign({ name: input.name, subject: input.subject, previewText: input.previewText ?? null, bodyHtml: input.bodyHtml ?? null, bodyText: input.bodyText ?? null, fromName: input.fromName ?? null, fromEmail: input.fromEmail ?? null, replyTo: input.replyTo ?? null, type: input.type, automationEnabled: input.automationEnabled, frequencyDays: input.frequencyDays ?? null, scheduledAt: input.scheduledAt ?? null, userId: ctx.user.id, status: "draft", totalRecipients: 0, sentAt: null, nextSendAt: null });
+      return createEmailCampaign({ name: input.name, subject: input.subject, previewText: input.previewText ?? null, bodyHtml: input.bodyHtml ?? null, bodyText: input.bodyText ?? null, fromName: input.fromName ?? null, fromEmail: input.fromEmail ?? null, replyTo: input.replyTo ?? null, type: input.type, automationEnabled: input.automationEnabled, frequencyDays: input.frequencyDays ?? null, scheduledAt: input.scheduledAt ?? null, userId: ctx.user.id, status: "draft", totalRecipients: 0, sentAt: null, nextSendAt: null, abTestEnabled: input.abTestEnabled && !!input.variantBSubject, variantBSubject: input.variantBSubject ?? null });
     }),
 
   updateCampaign: protectedProcedure
@@ -2874,6 +2969,8 @@ const emailCampaignsRouter = router({
       automationEnabled: z.boolean().optional(),
       frequencyDays: z.number().int().min(1).max(365).optional(),
       scheduledAt: z.date().optional(),
+      abTestEnabled: z.boolean().optional(),
+      variantBSubject: z.string().optional(),
     }))
     .mutation(async ({ ctx, input }) => {
       const { id, ...data } = input;
@@ -3220,20 +3317,31 @@ Return as JSON array.`;
       const campaignId = input.campaignId;
       const publicBaseUrl = ENV.publicBaseUrl;
 
+      // Subject-line A/B test: randomly split the list in half so each
+      // variant reaches a representative, non-biased sample rather than
+      // just "first half of however the list happens to be sorted."
+      const isAbTest = campaign.abTestEnabled && !!campaign.variantBSubject;
+      const shuffled = isAbTest ? [...prospects].sort(() => Math.random() - 0.5) : prospects;
+      const splitAt = Math.ceil(shuffled.length / 2);
+      const variantFor = (index: number): "a" | "b" | null => !isAbTest ? null : index < splitAt ? "a" : "b";
+
       // Fire-and-forget: this server is a long-running process (not
       // serverless), so this keeps running after the response is sent.
       (async () => {
         let delivered = 0;
         let failed = 0;
         let firstError: string | null = null;
-        for (const prospect of prospects) {
+        for (let i = 0; i < shuffled.length; i++) {
+          const prospect = shuffled[i];
+          const variant = variantFor(i);
+          const subject = variant === "b" ? campaign.variantBSubject! : campaign.subject;
           const html = campaign.bodyHtml && publicBaseUrl
-            ? instrumentEmailHtml(campaign.bodyHtml, publicBaseUrl, { campaignId, prospectId: prospect.id, userId })
+            ? instrumentEmailHtml(campaign.bodyHtml, publicBaseUrl, { campaignId, prospectId: prospect.id, userId, variant })
             : campaign.bodyHtml ?? undefined;
 
           const result = await sendEmail({
             to: prospect.email,
-            subject: campaign.subject,
+            subject,
             html,
             text: campaign.bodyText ?? undefined,
             fromName: campaign.fromName ?? undefined,
@@ -3249,6 +3357,7 @@ Return as JSON array.`;
             clickUrl: null,
             userAgent: null,
             ipAddress: null,
+            variant,
           }).catch(() => {});
 
           if (result.success) {
@@ -3308,7 +3417,7 @@ Return as JSON array.`;
         return { success: false };
       }
 
-      await insertEmailEvent({ ...input, userAgent: null, ipAddress: null, clickUrl: input.clickUrl ?? null });
+      await insertEmailEvent({ ...input, userAgent: null, ipAddress: null, clickUrl: input.clickUrl ?? null, variant: null });
       if (input.event === "unsubscribed") {
         await updateEmailProspect(input.prospectId, { status: "unsubscribed" });
       }
@@ -3416,7 +3525,7 @@ const autonomousRouter = router({
         const subject = moduleConfig.subject || "Discover Our Latest Home Decor Collection";
         const aiResp = await invokeLLM({ messages: [{ role: "system", content: "You are an expert email marketer for a premium home decor brand." }, { role: "user", content: `Write a compelling ${campaignType} email for a home decor store. Subject: "${subject}". Include: warm greeting, 2-3 product highlights with emotional storytelling, clear CTA button, and unsubscribe note. Return JSON: { subject, previewText, bodyHtml, bodyText }` }], response_format: { type: "json_schema", json_schema: { name: "email", strict: true, schema: { type: "object", properties: { subject: { type: "string" }, previewText: { type: "string" }, bodyHtml: { type: "string" }, bodyText: { type: "string" } }, required: ["subject","previewText","bodyHtml","bodyText"], additionalProperties: false } } } });
         const emailContent = JSON.parse(typeof aiResp.choices[0].message.content === "string" ? aiResp.choices[0].message.content : JSON.stringify(aiResp.choices[0].message.content));
-        const campaign = await createEmailCampaign({ userId: ctx.user.id, name: `Auto Campaign ${new Date().toLocaleDateString()}`, ...emailContent, type: campaignType as any, status: "sent", sentAt: new Date(), automationEnabled: false, frequencyDays: 30, totalSent: 0, totalDelivered: 0, totalOpened: 0, totalClicked: 0, totalBounced: 0, totalUnsubscribed: 0 });
+        const campaign = await createEmailCampaign({ userId: ctx.user.id, name: `Auto Campaign ${new Date().toLocaleDateString()}`, ...emailContent, type: campaignType as any, status: "sent", sentAt: new Date(), automationEnabled: false, frequencyDays: 30, totalSent: 0, totalDelivered: 0, totalOpened: 0, totalClicked: 0, totalBounced: 0, totalUnsubscribed: 0, abTestEnabled: false, variantBSubject: null });
         let delivered = 0;
         for (const prospect of newProspects) {
           const html = emailContent.bodyHtml && ENV.publicBaseUrl
@@ -3425,7 +3534,7 @@ const autonomousRouter = router({
           const sendResult = isEmailConfigured()
             ? await sendEmail({ to: prospect.email, subject: emailContent.subject, html, text: emailContent.bodyText })
             : { success: false as const, error: "RESEND_API_KEY not configured" };
-          await insertEmailEvent({ campaignId: campaign.id, prospectId: prospect.id, userId: ctx.user.id, event: sendResult.success ? "sent" : "bounced", clickUrl: null, userAgent: null, ipAddress: null });
+          await insertEmailEvent({ campaignId: campaign.id, prospectId: prospect.id, userId: ctx.user.id, event: sendResult.success ? "sent" : "bounced", clickUrl: null, userAgent: null, ipAddress: null, variant: null });
           if (sendResult.success) {
             delivered++;
             await updateEmailProspect(prospect.id, { lastContactedAt: new Date() });

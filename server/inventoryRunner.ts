@@ -16,6 +16,7 @@ import { decryptCredential, decryptCredentials } from "./crypto";
 import {
   getShopifyConfig,
   upsertInventorySnapshot,
+  setInventorySnapshotProductStatus,
   updateAutomationSetting,
   logActivity,
   getSourcingAppCredential,
@@ -121,6 +122,7 @@ export async function runInventoryScan(): Promise<InventoryScanResult> {
         title: `${product.title} - ${variant.title}`,
         sku: variant.sku,
         productHandle: product.handle,
+        productStatus: product.status,
         supplierStock: supplierStock !== null ? supplierStock : shopifyStock,
         shopifyStock,
         status,
@@ -142,6 +144,9 @@ export async function runInventoryScan(): Promise<InventoryScanResult> {
       if (productSupplierOutOfStock) supplierOutOfStockCount++;
       try {
         await client.updateProduct(String(product.id), { status: "draft" });
+        // Keep the snapshot's visibility in sync immediately, so the UI
+        // shows "Hidden" right after this scan instead of one scan later.
+        await setInventorySnapshotProductStatus(String(product.id), "draft");
         draftedTitles.push(productSupplierOutOfStock ? `${product.title} (supplier out of stock)` : product.title);
       } catch (draftErr) {
         draftFailures++;

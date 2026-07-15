@@ -199,6 +199,10 @@ export const inventorySnapshots = mysqlTable("inventory_snapshots", {
   // page, not just the admin edit page (the numeric product id alone can't
   // build a working storefront URL).
   productHandle: varchar("productHandle", { length: 255 }),
+  // Shopify product visibility (active = live on storefront, draft = hidden).
+  // Without this the UI couldn't show which products are currently hidden,
+  // or offer Unhide anywhere except the out-of-stock filter.
+  productStatus: varchar("productStatus", { length: 32 }),
   supplierStock: int("supplierStock").default(0),
   shopifyStock: int("shopifyStock").default(0),
   status: mysqlEnum("status", ["in_stock", "low_stock", "out_of_stock", "unknown"]).default("unknown").notNull(),
@@ -560,6 +564,11 @@ export const emailCampaigns = mysqlTable("email_campaigns", {
   totalClicked: int("totalClicked").default(0).notNull(),
   totalBounced: int("totalBounced").default(0).notNull(),
   totalUnsubscribed: int("totalUnsubscribed").default(0).notNull(),
+  // Subject-line A/B test: when set, half the recipient list gets `subject`,
+  // half gets `variantBSubject` (body is identical for both) — winner is
+  // read off per-variant open/click counts on email_events.variant.
+  abTestEnabled: boolean("abTestEnabled").default(false).notNull(),
+  variantBSubject: varchar("variantBSubject", { length: 512 }),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
   updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
 });
@@ -592,6 +601,9 @@ export const emailEvents = mysqlTable("email_events", {
   clickUrl: text("clickUrl"),
   userAgent: text("userAgent"),
   ipAddress: varchar("ipAddress", { length: 64 }),
+  // Which A/B subject-line variant this event belongs to ("a"/"b"), null for
+  // non-A/B campaigns.
+  variant: varchar("variant", { length: 1 }),
   occurredAt: timestamp("occurredAt").defaultNow().notNull(),
 });
 export type EmailEvent = typeof emailEvents.$inferSelect;

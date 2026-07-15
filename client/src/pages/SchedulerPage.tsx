@@ -1,6 +1,9 @@
+import { useState } from "react";
 import { trpc } from "@/lib/trpc";
 import { toast } from "sonner";
-import { Settings, Loader2, Search, FileText, Package, BarChart3, Megaphone, ShoppingBag, Clock, ToggleLeft, ToggleRight, Calendar, Truck, DollarSign, ShieldCheck, Zap } from "lucide-react";
+import { cronLabel } from "@/lib/cron";
+import { Button } from "@/components/ui/button";
+import { Settings, Loader2, Search, FileText, Package, BarChart3, Megaphone, ShoppingBag, Clock, ToggleLeft, ToggleRight, Calendar, Truck, DollarSign, ShieldCheck, Zap, Power, PowerOff } from "lucide-react";
 import { Switch } from "@/components/ui/switch";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -23,14 +26,27 @@ function getModuleInfo(module: string) {
   return moduleInfo[module] ?? { label: module, description: "Automation module", icon: Zap, color: "oklch(0.55 0.01 265)" };
 }
 
+// Crons execute in UTC on the server; the owner works in Eastern Time, so
+// presets are defined as ET times and converted to the equivalent UTC hour
+// (DST-aware as of today) when saved.
+function etHourToUtcHour(etHour: number): number {
+  const now = new Date();
+  for (let h = 0; h < 24; h++) {
+    const d = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), h, 0));
+    const etH = Number(d.toLocaleString("en-US", { hour: "numeric", hour12: false, timeZone: "America/New_York" })) % 24;
+    if (etH === etHour % 24) return h;
+  }
+  return etHour;
+}
+
 const cronPresets = [
   { label: "Every 30 minutes", value: "*/30 * * * *" },
   { label: "Every hour", value: "0 * * * *" },
   { label: "Every 6 hours", value: "0 */6 * * *" },
-  { label: "Daily at 9am", value: "0 9 * * *" },
-  { label: "Daily at midnight", value: "0 0 * * *" },
-  { label: "Twice daily", value: "0 9,21 * * *" },
-  { label: "Weekly (Mon 9am)", value: "0 9 * * 1" },
+  { label: "Daily at 9am ET", value: `0 ${etHourToUtcHour(9)} * * *` },
+  { label: "Daily at midnight ET", value: `0 ${etHourToUtcHour(0)} * * *` },
+  { label: "Twice daily (9am & 9pm ET)", value: `0 ${etHourToUtcHour(9)},${etHourToUtcHour(21)} * * *` },
+  { label: "Weekly (Mon 9am ET)", value: `0 ${etHourToUtcHour(9)} * * 1` },
 ];
 
 export default function SchedulerPage() {
@@ -53,7 +69,25 @@ export default function SchedulerPage() {
   };
 
   const getCronLabel = (cron: string) => {
-    return cronPresets.find(p => p.value === cron)?.label || cron;
+    return cronPresets.find(p => p.value === cron)?.label || cronLabel(cron);
+  };
+
+  const [bulkToggling, setBulkToggling] = useState(false);
+  const handleBulkToggle = async (enabled: boolean) => {
+    if (!settings) return;
+    setBulkToggling(true);
+    const targets = settings.filter((s: any) => s.enabled !== enabled);
+    const outcomes = await Promise.allSettled(
+      targets.map((s: any) => updateMutation.mutateAsync({ module: s.module, enabled }))
+    );
+    const failed = outcomes.filter(o => o.status === "rejected").length;
+    utils.scheduler.getAll.invalidate();
+    setBulkToggling(false);
+    if (failed === 0) {
+      toast.success(targets.length ? `${enabled ? "Enabled" : "Disabled"} ${targets.length} automation(s)` : `All automations already ${enabled ? "enabled" : "disabled"}`);
+    } else {
+      toast.error(`${targets.length - failed} updated, ${failed} failed`);
+    }
   };
 
   return (
@@ -82,9 +116,29 @@ export default function SchedulerPage() {
               <p className="text-xs text-muted-foreground">Total Modules</p>
             </div>
             <div className="flex-1" />
+            <div className="flex items-center gap-2">
+              <Button
+                variant="outline" size="sm"
+                onClick={() => handleBulkToggle(true)}
+                disabled={bulkToggling}
+                className="gap-1.5 border-emerald-500/30 text-emerald-400 hover:bg-emerald-500/10"
+              >
+                {bulkToggling ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Power className="w-3.5 h-3.5" />}
+                Enable All
+              </Button>
+              <Button
+                variant="outline" size="sm"
+                onClick={() => handleBulkToggle(false)}
+                disabled={bulkToggling}
+                className="gap-1.5 border-red-500/30 text-red-400 hover:bg-red-500/10"
+              >
+                {bulkToggling ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <PowerOff className="w-3.5 h-3.5" />}
+                Disable All
+              </Button>
+            </div>
             <div className="flex items-center gap-2 text-xs text-muted-foreground">
               <Clock className="w-3.5 h-3.5" />
-              Schedules run in UTC
+              Times shown in Eastern Time (ET)
             </div>
           </div>
         </div>

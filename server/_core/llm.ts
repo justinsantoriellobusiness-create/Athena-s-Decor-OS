@@ -228,9 +228,32 @@ const DEFAULT_MAX_TOKENS = 4096;
 
 const useAnthropic = () => !ENV.forgeApiKey && Boolean(ENV.anthropicApiKey);
 
+// HTTP header values must be Latin-1 (byte values 0-255). A key copy-pasted
+// from a masked field or rich-text source can silently contain a bullet
+// (U+2022 "•", code 8226) or smart quote — fetch() then dies with the
+// cryptic "Cannot convert argument to a ByteString because the character at
+// index N has a value of 8226", which took down every LLM automation (blog,
+// SEO, sourcing, email content) in production. Catch it upfront and say
+// exactly which env var to fix and how.
+const findInvalidHeaderChar = (value: string): { index: number; code: number } | null => {
+  for (let i = 0; i < value.length; i++) {
+    const code = value.charCodeAt(i);
+    if (code > 255) return { index: i, code };
+  }
+  return null;
+};
+
 const assertApiKey = () => {
   if (!ENV.forgeApiKey && !ENV.anthropicApiKey) {
     throw new Error("No LLM provider configured: set ANTHROPIC_API_KEY");
+  }
+  const activeName = ENV.forgeApiKey ? "FORGE_API_KEY" : "ANTHROPIC_API_KEY";
+  const activeKey = ENV.forgeApiKey || ENV.anthropicApiKey;
+  const bad = findInvalidHeaderChar(activeKey);
+  if (bad) {
+    throw new Error(
+      `${activeName} contains an invalid character (code ${bad.code}${bad.code === 8226 ? ", a bullet • from a masked/hidden field" : ""} at position ${bad.index}) — the key was corrupted during copy-paste. Fix: open your API provider's dashboard, click "reveal"/"copy" on the real key (never copy from a field showing dots), then re-paste it into Railway → Variables → ${activeName} and redeploy.`
+    );
   }
 };
 

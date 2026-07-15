@@ -1,3 +1,4 @@
+import { cronLabel } from "@/lib/cron";
 import { useState } from "react";
 import { trpc } from "@/lib/trpc";
 import { toast } from "sonner";
@@ -91,7 +92,7 @@ export default function AdsPage() {
               <Zap className="w-4 h-4 text-pink-400" />
               <div>
                 <p className="text-xs text-white/70 font-medium">Auto-Optimize</p>
-                <p className="text-[10px] text-white/30">{adsSetting.cronExpression || "Daily 6am"}</p>
+                <p className="text-[10px] text-white/30">{cronLabel(adsSetting.cronExpression)}</p>
               </div>
               <button onClick={() => updateScheduler.mutate({ module: "ads", enabled: !adsSetting.enabled })}>
                 {adsSetting.enabled
