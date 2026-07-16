@@ -3,7 +3,7 @@ import { trpc } from "@/lib/trpc";
 import { toast } from "sonner";
 import {
   Truck, Loader2, RefreshCw, CheckCircle2, XCircle, Clock, AlertTriangle,
-  Package, ExternalLink, Search, Wallet, ArrowRight,
+  Package, ExternalLink, Search, Wallet, ArrowRight, DollarSign, ChevronDown, ChevronUp,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -44,6 +44,7 @@ const DSERS_DASHBOARD_URL = "https://www.dsers.com/";
 export default function FulfillmentPage() {
   const [filter, setFilter] = useState<string>("all");
   const [search, setSearch] = useState("");
+  const [spendOpen, setSpendOpen] = useState(false);
   const [lastRun, setLastRun] = useState<{
     ordersPlaced: number; ordersShipped: number; ordersRoutedToDsers: number;
     ordersSkipped: number; errors: string[]; lockedOut?: boolean; at: Date;
@@ -52,6 +53,7 @@ export default function FulfillmentPage() {
 
   const { data: ordersData, isLoading } = trpc.fulfillment.getOrders.useQuery(undefined, { refetchInterval: 60000 });
   const { data: balance, isLoading: balanceLoading } = trpc.fulfillment.getCjBalance.useQuery();
+  const { data: cjSpend, isLoading: spendLoading } = trpc.fulfillment.getCjSpend.useQuery({ limit: 50 });
   const { data: shopifyConfig } = trpc.shopify.getConfig.useQuery();
 
   const runNowMutation = trpc.fulfillment.runNow.useMutation({
@@ -122,6 +124,44 @@ export default function FulfillmentPage() {
               <span className="flex items-center gap-1 text-[10px] text-red-400 bg-red-500/10 rounded px-1.5 py-0.5">
                 <AlertTriangle className="w-3 h-3" /> Low — orders will start failing to place if this hits $0
               </span>
+            )}
+          </div>
+        )}
+      </div>
+
+      {/* CJ spend — the real transactions Accounting recorded at order time, not an estimate shown twice */}
+      <div className="glass rounded-xl border border-border/30 overflow-hidden">
+        <button
+          onClick={() => setSpendOpen((v) => !v)}
+          className="w-full flex items-center gap-3 p-4 text-left hover:bg-secondary/30 transition-colors"
+        >
+          <DollarSign className="w-4 h-4 text-emerald-400 flex-shrink-0" />
+          {spendLoading ? (
+            <Skeleton className="h-4 w-48" />
+          ) : (
+            <p className="text-xs text-foreground font-medium flex-1">
+              CJ spend to date: <span className="text-emerald-400">${(cjSpend?.total ?? 0).toFixed(2)}</span>
+              <span className="text-muted-foreground"> across {cjSpend?.count ?? 0} order{cjSpend?.count === 1 ? "" : "s"}</span>
+            </p>
+          )}
+          {spendOpen ? <ChevronUp className="w-4 h-4 text-muted-foreground" /> : <ChevronDown className="w-4 h-4 text-muted-foreground" />}
+        </button>
+        {spendOpen && (
+          <div className="border-t border-border/30 divide-y divide-border/20 max-h-80 overflow-y-auto">
+            {!cjSpend?.transactions.length ? (
+              <p className="text-xs text-muted-foreground text-center py-6">
+                No CJ spend recorded yet — this fills in automatically as auto-fulfillment places orders.
+              </p>
+            ) : (
+              cjSpend.transactions.map((t) => (
+                <div key={t.id} className="flex items-center gap-4 px-4 py-2.5 flex-wrap">
+                  <div className="min-w-[90px]">
+                    <p className="text-[10px] text-muted-foreground">{new Date(t.date).toLocaleDateString()}</p>
+                  </div>
+                  <p className="text-xs text-foreground flex-1 min-w-[160px] truncate">{t.description}</p>
+                  <p className="text-xs text-red-400 font-medium w-20 text-right">-${t.amount.toFixed(2)}</p>
+                </div>
+              ))
             )}
           </div>
         )}

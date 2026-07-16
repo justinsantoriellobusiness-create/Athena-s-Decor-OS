@@ -93,6 +93,7 @@ const AUTONOMOUS_ROUTES = [
   "blog-autonomous",
   "site-audit",
   "product-sourcing",
+  "ai-suggestions",
 ];
 const AUTONOMOUS_CHECK_INTERVAL_MS = 5 * 60_000;
 

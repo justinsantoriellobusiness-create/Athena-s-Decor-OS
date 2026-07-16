@@ -109,7 +109,14 @@ import {
   getRecentActivity,
   getInventoryGroupedByProduct,
   logActivity,
+  getConnectionStatus,
+  getPendingAiSuggestions,
+  getRecentAiSuggestions,
+  updateAiSuggestion,
+  updateUserProfile,
 } from "./db";
+import { unmetRequirements, CONNECTION_LABELS } from "@shared/automationRequirements";
+import { generateAiSuggestions, executeAiSuggestion } from "./suggestionsRunner";
 import { runInventoryScan, computeStatus } from "./inventoryRunner";
 import { runAutoFulfillment, deriveOrderStatus } from "./fulfillmentRunner";
 import { getCjAccessToken, getCjBalance } from "./_core/cjDropshipping";
@@ -131,6 +138,8 @@ import {
 import { withRateLimit, sleep } from "./rateLimiter";
 import { createAndPublishBlogPost } from "./blogPublish";
 
+const THEME_PRESETS = ["gold", "emerald", "sapphire", "rose", "violet"] as const;
+
 // ─── Auth Router ──────────────────────────────────────────────────────────────
 const authRouter = router({
   me: publicProcedure.query((opts) => opts.ctx.user),
@@ -139,6 +148,35 @@ const authRouter = router({
     ctx.res.clearCookie(COOKIE_NAME, { ...cookieOptions, maxAge: -1 });
     return { success: true } as const;
   }),
+
+  // Owner-editable profile fields only — name and theme preset are
+  // display-only, never re-derived from the auth provider, so they persist
+  // across logins (see upsertUser()'s login-sync path).
+  updateProfile: protectedProcedure
+    .input(z.object({
+      name: z.string().trim().min(1).max(255).optional(),
+      themePreset: z.enum(THEME_PRESETS).optional(),
+    }))
+    .mutation(async ({ ctx, input }) => {
+      await updateUserProfile(ctx.user.id, input);
+      return { success: true };
+    }),
+
+  uploadAvatar: protectedProcedure
+    .input(z.object({ dataUrl: z.string().startsWith("data:image/") }))
+    .mutation(async ({ ctx, input }) => {
+      const match = input.dataUrl.match(/^data:(image\/[a-zA-Z0-9.+-]+);base64,(.+)$/);
+      if (!match) throw new TRPCError({ code: "BAD_REQUEST", message: "Invalid image data." });
+      const [, mimeType, base64] = match;
+      const buffer = Buffer.from(base64, "base64");
+      if (buffer.length > 5 * 1024 * 1024) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: "Image too large — please use one under 5MB." });
+      }
+      const ext = mimeType.split("/")[1]?.replace("jpeg", "jpg") || "jpg";
+      const stored = await storagePut(`avatars/${ctx.user.id}-${Date.now()}.${ext}`, buffer, mimeType);
+      await updateUserProfile(ctx.user.id, { avatarUrl: stored.url });
+      return { url: stored.url };
+    }),
 });
 
 // ─── Shopify Router ───────────────────────────────────────────────────────────
@@ -214,6 +252,10 @@ const schedulerRouter = router({
     return getAllAutomationSettings();
   }),
 
+  getConnectionStatus: protectedProcedure.query(async () => {
+    return getConnectionStatus();
+  }),
+
   update: protectedProcedure
     .input(z.object({
       module: z.string(),
@@ -222,6 +264,16 @@ const schedulerRouter = router({
       config: z.any().optional(),
     }))
     .mutation(async ({ input }) => {
+      if (input.enabled === true) {
+        const status = await getConnectionStatus();
+        const missing = unmetRequirements(input.module, status);
+        if (missing.length > 0) {
+          throw new TRPCError({
+            code: "PRECONDITION_FAILED",
+            message: `Can't enable this automation — connect ${missing.map((k) => CONNECTION_LABELS[k]).join(" and ")} first.`,
+          });
+        }
+      }
       // Actual execution is handled by the self-hosted scheduler
       // (server/_core/scheduler.ts), which polls this table directly by
       // module + cronExpression — no external job registration needed.
@@ -444,7 +496,15 @@ Return JSON: { "optimizedTitle": string, "optimizedDescription": string, "metaTi
     .query(async ({ input }) => {
       const job = input.jobId ? await getOptimizationJob(input.jobId) : await getLatestOptimizationJob();
       if (!job) return null;
-      const queue = await getQueueItemsForJob(job.id);
+      const [rawQueue, inventoryGroups] = await Promise.all([
+        getQueueItemsForJob(job.id),
+        getInventoryGroupedByProduct(),
+      ]);
+      // Product images live in the inventory snapshot table, not the
+      // optimization queue itself — join by Shopify product id so the
+      // catalog view can actually show pictures instead of blank rows.
+      const imageByProductId = new Map(inventoryGroups.map((g) => [g.shopifyProductId, g.imageUrl]));
+      const queue = rawQueue.map((q) => ({ ...q, imageUrl: imageByProductId.get(q.shopifyProductId) ?? null }));
       const completed = queue.filter((q) => q.status === "completed").length;
       const failed = queue.filter((q) => q.status === "failed").length;
       const pending = queue.filter((q) => q.status === "pending" || q.status === "processing").length;
@@ -1375,6 +1435,29 @@ const fulfillmentRouter = router({
     if (!balance) return { connected: true as const, amount: null, frozen: null, error: "Balance check failed — CJ's API didn't return a usable response." };
     return { connected: true as const, amount: balance.amount, frozen: balance.frozen, error: null };
   }),
+
+  // Real CJ spend, pulled from the same Accounting transactions the
+  // auto-fulfillment run records at order time — not a separate estimate,
+  // so this always matches what's in the P&L.
+  getCjSpend: protectedProcedure
+    .input(z.object({ limit: z.number().int().min(1).max(200).default(50) }))
+    .query(async ({ input }) => {
+      const txns = await getTransactions({ source: "cj_dropshipping", limit: input.limit });
+      const total = txns.reduce((sum, t) => sum + Math.abs(Number(t.amount)), 0);
+      return {
+        total: Math.round(total * 100) / 100,
+        count: txns.length,
+        transactions: txns.map((t) => ({
+          id: t.id,
+          date: t.date,
+          description: t.description,
+          amount: Math.abs(Number(t.amount)),
+          orderId: t.orderId,
+          externalId: t.externalId,
+          notes: t.notes,
+        })),
+      };
+    }),
 });
 
 // ─── Ads Router ───────────────────────────────────────────────────────────────
@@ -3473,6 +3556,16 @@ const autonomousRouter = router({
       config: z.record(z.string(), z.any()).optional(),
     }))
     .mutation(async ({ ctx, input }) => {
+      if (input.enabled === true) {
+        const status = await getConnectionStatus();
+        const missing = unmetRequirements(input.module, status);
+        if (missing.length > 0) {
+          throw new TRPCError({
+            code: "PRECONDITION_FAILED",
+            message: `Can't enable this automation — connect ${missing.map((k) => CONNECTION_LABELS[k]).join(" and ")} first.`,
+          });
+        }
+      }
       const { module, ...data } = input;
       const updated = await upsertAutonomousConfig(ctx.user.id, module, data);
       return updated;
@@ -3792,6 +3885,40 @@ const activityRouter = router({
     .query(async ({ input }) => getRecentActivity({ limit: input?.limit, module: input?.module })),
 });
 
+// ─── AI Suggestions Router (Dashboard approve/deny feed) ──────────────────────
+const aiSuggestionsRouter = router({
+  getPending: protectedProcedure.query(async () => getPendingAiSuggestions()),
+  getRecent: protectedProcedure
+    .input(z.object({ limit: z.number().min(1).max(100).default(20) }).optional())
+    .query(async ({ input }) => getRecentAiSuggestions(input?.limit)),
+
+  // Analyzes real store data and stores up to 3 new suggestions if anything
+  // is actually justified. Cheap to call often — it caps itself at 5
+  // outstanding pending suggestions and skips entirely if Shopify isn't
+  // connected, so it can be safely triggered on Dashboard load.
+  generate: protectedProcedure.mutation(async () => {
+    try {
+      return await generateAiSuggestions();
+    } catch (err: any) {
+      console.error("[AiSuggestions] Generation failed:", err);
+      throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: err.message || "Failed to generate suggestions." });
+    }
+  }),
+
+  approve: protectedProcedure
+    .input(z.object({ id: z.number() }))
+    .mutation(async ({ input }) => {
+      return executeAiSuggestion(input.id);
+    }),
+
+  deny: protectedProcedure
+    .input(z.object({ id: z.number() }))
+    .mutation(async ({ input }) => {
+      await updateAiSuggestion(input.id, { status: "denied", resolvedAt: new Date() });
+      return { success: true };
+    }),
+});
+
 // ─── App Router ───────────────────────────────────────────────────────────────
 export const appRouter = router({
   system: systemRouter,
@@ -3814,6 +3941,7 @@ export const appRouter = router({
   backlinker: backlinkerRouter,
   emailCampaigns: emailCampaignsRouter,
   autonomous: autonomousRouter,
+  aiSuggestions: aiSuggestionsRouter,
 });
 
 export type AppRouter = typeof appRouter;

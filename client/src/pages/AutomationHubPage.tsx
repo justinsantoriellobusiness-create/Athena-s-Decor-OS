@@ -13,6 +13,7 @@ import {
   Megaphone, DollarSign, Play, Clock, CheckCircle2, AlertCircle, Zap,
   RefreshCw, Settings2, TrendingUp, Target
 } from "lucide-react";
+import { unmetRequirements, CONNECTION_LABELS } from "@shared/automationRequirements";
 
 const MODULES = [
   {
@@ -144,6 +145,7 @@ function formatRelative(date: Date | string | null | undefined) {
 
 export default function AutomationHubPage() {
   const { data: configs, refetch } = trpc.autonomous.getAll.useQuery();
+  const { data: connectionStatus } = trpc.scheduler.getConnectionStatus.useQuery();
   const upsertConfig = trpc.autonomous.update.useMutation({ onSuccess: () => refetch() });
   const runNow = trpc.autonomous.runNow.useMutation();
 
@@ -154,7 +156,17 @@ export default function AutomationHubPage() {
   const getConfig = (moduleId: ModuleId) =>
     configs?.find((c) => c.module === moduleId);
 
+  const getMissing = (moduleId: ModuleId) =>
+    connectionStatus ? unmetRequirements(moduleId, connectionStatus) : [];
+
   const handleToggle = (moduleId: ModuleId, enabled: boolean) => {
+    if (enabled) {
+      const missing = getMissing(moduleId);
+      if (missing.length > 0) {
+        toast.error(`Connect ${missing.map((k) => CONNECTION_LABELS[k]).join(" and ")} first`);
+        return;
+      }
+    }
     const existing = getConfig(moduleId);
     upsertConfig.mutate({
       module: moduleId,
@@ -175,15 +187,18 @@ export default function AutomationHubPage() {
 
   const handleEnableAll = async () => {
     setEnablingAll(true);
-    const targets = MODULES.filter(m => !getConfig(m.id)?.enabled);
+    const eligible = MODULES.filter(m => !getConfig(m.id)?.enabled);
+    const skipped = eligible.filter(m => getMissing(m.id).length > 0).length;
+    const targets = eligible.filter(m => getMissing(m.id).length === 0);
     const outcomes = await Promise.allSettled(
       targets.map(m => upsertConfig.mutateAsync({ module: m.id, enabled: true, frequencyHours: m.defaultFreq }))
     );
     const failed = outcomes.filter(o => o.status === "rejected").length;
     refetch();
     setEnablingAll(false);
+    const skippedNote = skipped > 0 ? ` (${skipped} skipped — not connected)` : "";
     if (failed === 0) {
-      toast.success(targets.length ? `Enabled ${targets.length} automation(s)` : "All automations already enabled");
+      toast.success((targets.length ? `Enabled ${targets.length} automation(s)` : "All connected automations already enabled") + skippedNote);
     } else {
       toast.error(`${targets.length - failed} enabled, ${failed} failed — check and retry the ones still off`);
     }
@@ -268,6 +283,8 @@ export default function AutomationHubPage() {
           const result = runResults[module.id];
           const Icon = module.icon;
           const freqIndex = freqOptions.indexOf(freqHours) !== -1 ? freqOptions.indexOf(freqHours) : freqOptions.findIndex(f => f >= freqHours);
+          const missing = getMissing(module.id);
+          const blocked = !isEnabled && missing.length > 0;
 
           return (
             <Card
@@ -281,14 +298,27 @@ export default function AutomationHubPage() {
                       <Icon className={`w-5 h-5 ${module.color}`} />
                     </div>
                     <div>
-                      <CardTitle className="text-base">{module.label}</CardTitle>
+                      <div className="flex items-center gap-2">
+                        <CardTitle className="text-base">{module.label}</CardTitle>
+                        {blocked && (
+                          <Badge variant="outline" className="text-[10px] border-red-500/30 text-red-400 px-1.5 py-0">
+                            Not connected
+                          </Badge>
+                        )}
+                      </div>
                       <p className="text-xs text-muted-foreground mt-0.5">{module.description}</p>
+                      {blocked && (
+                        <p className="text-[11px] text-red-400/80 mt-1">
+                          Requires {missing.map((k) => CONNECTION_LABELS[k]).join(" and ")} to be connected.
+                        </p>
+                      )}
                     </div>
                   </div>
                   <Switch
                     checked={isEnabled}
                     onCheckedChange={(v) => handleToggle(module.id, v)}
-                    disabled={upsertConfig.isPending}
+                    disabled={upsertConfig.isPending || blocked}
+                    title={blocked ? `Connect ${missing.map((k) => CONNECTION_LABELS[k]).join(" and ")} first` : undefined}
                   />
                 </div>
               </CardHeader>

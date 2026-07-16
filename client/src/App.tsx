@@ -1,11 +1,14 @@
+import { useEffect } from "react";
 import { Toaster } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import NotFound from "@/pages/NotFound";
 import { Route, Switch } from "wouter";
 import ErrorBoundary from "./components/ErrorBoundary";
 import { ThemeProvider } from "./contexts/ThemeContext";
+import { useAuth } from "@/_core/hooks/useAuth";
 import AppLayout from "./components/AppLayout";
 import Dashboard from "./pages/Dashboard";
+import ProfilePage from "./pages/ProfilePage";
 import ShopifyPage from "./pages/ShopifyPage";
 import SeoPage from "./pages/SeoPage";
 import BlogPage from "./pages/BlogPage";
@@ -48,9 +51,23 @@ function Router() {
       <Route path="/email-campaigns" component={() => <AppLayout><EmailCampaignsPage /></AppLayout>} />
       <Route path="/automation" component={() => <AppLayout><AutomationHubPage /></AppLayout>} />
       <Route path="/activity" component={() => <AppLayout><ActivityPage /></AppLayout>} />
+      <Route path="/profile" component={() => <AppLayout><ProfilePage /></AppLayout>} />
       <Route component={NotFound} />
     </Switch>
   );
+}
+
+// Applies the signed-in user's chosen accent color preset (set on the
+// Profile page) as a data attribute on <html>, which the CSS in index.css
+// keys off of. Falls back to the default "gold" palette while logged out
+// or before the user record loads, so there's never a flash of an
+// undefined attribute value.
+function ColorThemeSync() {
+  const { user } = useAuth();
+  useEffect(() => {
+    document.documentElement.dataset.colorTheme = (user as any)?.themePreset || "gold";
+  }, [(user as any)?.themePreset]);
+  return null;
 }
 
 function App() {
@@ -59,6 +76,7 @@ function App() {
       <ThemeProvider defaultTheme="dark">
         <TooltipProvider>
           <Toaster richColors position="top-right" />
+          <ColorThemeSync />
           <Router />
         </TooltipProvider>
       </ThemeProvider>

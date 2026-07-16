@@ -55,6 +55,7 @@ import { notifyOwner } from "./_core/notification";
 import { ENV } from "./_core/env";
 import { INTERNAL_CRON_SECRET_HEADER } from "./_core/scheduler";
 import { createAndPublishBlogPost } from "./blogPublish";
+import { generateAiSuggestions } from "./suggestionsRunner";
 
 // Autonomous config rows don't self-throttle — without this check, calling
 // an /api/scheduled/* route on every poll tick would re-run every enabled
@@ -82,6 +83,9 @@ async function cronAuth(req: Request, res: Response, next: NextFunction) {
     return res.status(403).json({ error: "Unauthorized — scheduled routes are cron-only" });
   }
 }
+
+let lastAiSuggestionGenAt = 0;
+const AI_SUGGESTION_GEN_INTERVAL_MS = 4 * 3600_000; // every 4 hours
 
 export function registerScheduledRoutes(app: Router) {
   // SEO automation
@@ -590,6 +594,26 @@ export function registerScheduledRoutes(app: Router) {
       res.json({ success: true, totalPosts });
     } catch (err: any) {
       await logActivity({ module: "blog", level: "error", title: "Autonomous blog generation failed", detail: err.message });
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // ─── AI Suggestions: periodic analysis of real store data ────────────────
+  // Always-on (not gated by an enable toggle) since generating a suggestion
+  // never changes anything by itself — only approving one does. Self-
+  // throttled in-process so the 5-minute autonomous poll doesn't burn an
+  // LLM call every tick; generateAiSuggestions() also caps itself at 5
+  // outstanding pending suggestions.
+  app.post("/api/scheduled/ai-suggestions", cronAuth, async (req, res) => {
+    if (Date.now() - lastAiSuggestionGenAt < AI_SUGGESTION_GEN_INTERVAL_MS) {
+      return res.json({ skipped: true });
+    }
+    lastAiSuggestionGenAt = Date.now();
+    try {
+      const result = await generateAiSuggestions();
+      res.json({ success: true, ...result });
+    } catch (err: any) {
+      console.error("[AiSuggestions] Scheduled generation failed:", err);
       res.status(500).json({ error: err.message });
     }
   });
