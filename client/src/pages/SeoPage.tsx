@@ -5,7 +5,7 @@ import { toast } from "sonner";
 import {
   Search, TrendingUp, TrendingDown, Minus, Loader2, Play, BarChart2,
   AlertTriangle, CheckCircle2, Info, Zap, Package, Clock, XCircle,
-  ChevronDown, ChevronUp, Sparkles, StopCircle,
+  ChevronDown, ChevronUp, Sparkles, StopCircle, LayoutGrid, List, ArrowRight,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -35,11 +35,30 @@ function formatEta(seconds: number | null): string {
   return `~${m}m ${s}s`;
 }
 
+function stripHtml(html: string | null | undefined): string {
+  if (!html) return "";
+  return html.replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim();
+}
+
+function DiffField({ label, before, after }: { label: string; before: string; after: string }) {
+  return (
+    <div className="space-y-1.5">
+      <p className="text-xs text-white/30 uppercase tracking-wider">{label}</p>
+      <div className="grid grid-cols-1 md:grid-cols-[1fr_auto_1fr] gap-2 items-start">
+        <p className="text-sm text-white/40 line-through decoration-red-400/40">{before || <span className="italic">empty</span>}</p>
+        <ArrowRight className="w-3.5 h-3.5 text-white/20 mt-1 hidden md:block" />
+        <p className="text-sm text-emerald-300/90">{after || <span className="italic text-white/30">empty</span>}</p>
+      </div>
+    </div>
+  );
+}
+
 function BulkOptimizerPanel() {
   const utils = trpc.useUtils();
   const [activeJobId, setActiveJobId] = useState<number | undefined>(undefined);
   const [polling, setPolling] = useState(false);
   const [expandedItems, setExpandedItems] = useState<Set<number>>(new Set());
+  const [viewMode, setViewMode] = useState<"list" | "catalog">("list");
 
   const { data: jobData, refetch: refetchJob } = trpc.seo.getBulkOptimizeJob.useQuery(
     { jobId: activeJobId },
@@ -181,76 +200,136 @@ function BulkOptimizerPanel() {
         </CardContent>
       </Card>
 
-      {/* Per-product status list */}
+      {/* Per-product status list / catalog */}
       {jobData?.queue && jobData.queue.length > 0 && (
         <div className="space-y-1">
-          <p className="text-xs text-white/30 uppercase tracking-wider px-1 mb-2">Product Queue</p>
-          {jobData.queue.slice(0, 50).map((item: any) => (
-            <div
-              key={item.id}
-              className={`border rounded-lg overflow-hidden transition-all ${
-                item.status === "completed" ? "border-emerald-500/15 bg-emerald-500/3" :
-                item.status === "failed" ? "border-red-500/15 bg-red-500/3" :
-                item.status === "processing" ? "border-violet-500/20 bg-violet-500/5" :
-                "border-white/5 bg-[#0f0f1a]"
-              }`}
-            >
-              <div
-                className="flex items-center gap-3 p-3 cursor-pointer"
-                onClick={() => item.status === "completed" && toggleItem(item.id)}
+          <div className="flex items-center justify-between px-1 mb-2">
+            <p className="text-xs text-white/30 uppercase tracking-wider">Product Queue</p>
+            <div className="flex items-center gap-1 bg-white/5 rounded-lg p-0.5">
+              <button
+                onClick={() => setViewMode("list")}
+                className={`flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs transition-colors ${viewMode === "list" ? "bg-violet-600/30 text-violet-200" : "text-white/40 hover:text-white/70"}`}
               >
-                <div className="shrink-0">
-                  {item.status === "completed" && <CheckCircle2 className="w-4 h-4 text-emerald-400" />}
-                  {item.status === "failed" && <XCircle className="w-4 h-4 text-red-400" />}
-                  {item.status === "processing" && <Loader2 className="w-4 h-4 text-violet-400 animate-spin" />}
-                  {(item.status === "pending" || item.status === "skipped") && <Package className="w-4 h-4 text-white/20" />}
-                </div>
-                <div className="flex-1 min-w-0">
-                  <p className="text-sm text-white/80 truncate">
-                    {item.optimizedTitle || item.originalTitle || `Product #${item.shopifyProductId}`}
-                  </p>
-                  {item.status === "failed" && item.errorMessage && (
-                    <p className="text-xs text-red-400/70 truncate">{item.errorMessage}</p>
-                  )}
-                  {item.status === "completed" && item.metaTitle && (
-                    <p className="text-xs text-white/30 truncate">Meta: {item.metaTitle}</p>
-                  )}
-                </div>
-                <Badge className={`text-xs shrink-0 ${
-                  item.status === "completed" ? "bg-emerald-500/10 text-emerald-400 border-emerald-500/20" :
-                  item.status === "failed" ? "bg-red-500/10 text-red-400 border-red-500/20" :
-                  item.status === "processing" ? "bg-violet-500/10 text-violet-400 border-violet-500/20" :
-                  "bg-white/5 text-white/30 border-white/10"
-                }`}>
-                  {item.status}
-                </Badge>
-                {item.status === "completed" && (
-                  expandedItems.has(item.id) ? <ChevronUp className="w-3 h-3 text-white/30" /> : <ChevronDown className="w-3 h-3 text-white/30" />
-                )}
-              </div>
-
-              {item.status === "completed" && expandedItems.has(item.id) && (
-                <div className="border-t border-white/5 p-4 grid grid-cols-1 md:grid-cols-2 gap-3">
-                  <div className="space-y-2">
-                    <p className="text-xs text-white/30 uppercase tracking-wider">Optimized Title</p>
-                    <p className="text-sm text-white/70">{item.optimizedTitle}</p>
-                  </div>
-                  <div className="space-y-2">
-                    <p className="text-xs text-white/30 uppercase tracking-wider">Meta Title ({item.metaTitle?.length ?? 0} chars)</p>
-                    <p className="text-sm text-white/70">{item.metaTitle}</p>
-                  </div>
-                  <div className="space-y-2 md:col-span-2">
-                    <p className="text-xs text-white/30 uppercase tracking-wider">Meta Description ({item.metaDescription?.length ?? 0} chars)</p>
-                    <p className="text-sm text-white/70">{item.metaDescription}</p>
-                  </div>
-                </div>
-              )}
+                <List className="w-3 h-3" /> List
+              </button>
+              <button
+                onClick={() => setViewMode("catalog")}
+                className={`flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs transition-colors ${viewMode === "catalog" ? "bg-violet-600/30 text-violet-200" : "text-white/40 hover:text-white/70"}`}
+              >
+                <LayoutGrid className="w-3 h-3" /> Catalog
+              </button>
             </div>
-          ))}
-          {jobData.queue.length > 50 && (
-            <p className="text-xs text-white/30 text-center py-2">
-              Showing 50 of {jobData.queue.length} products
-            </p>
+          </div>
+
+          {viewMode === "catalog" ? (
+            <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-3">
+              {jobData.queue.slice(0, 100).map((item: any) => (
+                <button
+                  key={item.id}
+                  onClick={() => item.status === "completed" && toggleItem(item.id)}
+                  className={`text-left border rounded-lg overflow-hidden transition-all ${
+                    item.status === "completed" ? "border-emerald-500/15 bg-emerald-500/3" :
+                    item.status === "failed" ? "border-red-500/15 bg-red-500/3" :
+                    item.status === "processing" ? "border-violet-500/20 bg-violet-500/5" :
+                    "border-white/5 bg-[#0f0f1a]"
+                  }`}
+                >
+                  <div className="aspect-square bg-white/5 flex items-center justify-center overflow-hidden">
+                    {item.imageUrl ? (
+                      <img src={item.imageUrl} alt="" className="w-full h-full object-cover" />
+                    ) : (
+                      <Package className="w-6 h-6 text-white/15" />
+                    )}
+                  </div>
+                  <div className="p-2 space-y-1">
+                    <p className="text-xs text-white/70 truncate">{item.optimizedTitle || item.originalTitle || `Product #${item.shopifyProductId}`}</p>
+                    <Badge className={`text-[10px] ${
+                      item.status === "completed" ? "bg-emerald-500/10 text-emerald-400 border-emerald-500/20" :
+                      item.status === "failed" ? "bg-red-500/10 text-red-400 border-red-500/20" :
+                      item.status === "processing" ? "bg-violet-500/10 text-violet-400 border-violet-500/20" :
+                      "bg-white/5 text-white/30 border-white/10"
+                    }`}>
+                      {item.status}
+                    </Badge>
+                  </div>
+                  {item.status === "completed" && expandedItems.has(item.id) && (
+                    <div className="border-t border-white/5 p-3 space-y-3">
+                      <DiffField label="Title" before={item.originalTitle ?? ""} after={item.optimizedTitle ?? ""} />
+                      <DiffField label="Meta title" before={item.originalMetaTitle ?? ""} after={item.metaTitle ?? ""} />
+                    </div>
+                  )}
+                </button>
+              ))}
+            </div>
+          ) : (
+            <>
+              {jobData.queue.slice(0, 50).map((item: any) => (
+                <div
+                  key={item.id}
+                  className={`border rounded-lg overflow-hidden transition-all ${
+                    item.status === "completed" ? "border-emerald-500/15 bg-emerald-500/3" :
+                    item.status === "failed" ? "border-red-500/15 bg-red-500/3" :
+                    item.status === "processing" ? "border-violet-500/20 bg-violet-500/5" :
+                    "border-white/5 bg-[#0f0f1a]"
+                  }`}
+                >
+                  <div
+                    className="flex items-center gap-3 p-3 cursor-pointer"
+                    onClick={() => item.status === "completed" && toggleItem(item.id)}
+                  >
+                    <div className="w-9 h-9 rounded-md bg-white/5 flex items-center justify-center overflow-hidden shrink-0">
+                      {item.imageUrl ? (
+                        <img src={item.imageUrl} alt="" className="w-full h-full object-cover" />
+                      ) : (
+                        <Package className="w-4 h-4 text-white/15" />
+                      )}
+                    </div>
+                    <div className="shrink-0">
+                      {item.status === "completed" && <CheckCircle2 className="w-4 h-4 text-emerald-400" />}
+                      {item.status === "failed" && <XCircle className="w-4 h-4 text-red-400" />}
+                      {item.status === "processing" && <Loader2 className="w-4 h-4 text-violet-400 animate-spin" />}
+                      {(item.status === "pending" || item.status === "skipped") && <Package className="w-4 h-4 text-white/20" />}
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <p className="text-sm text-white/80 truncate">
+                        {item.optimizedTitle || item.originalTitle || `Product #${item.shopifyProductId}`}
+                      </p>
+                      {item.status === "failed" && item.errorMessage && (
+                        <p className="text-xs text-red-400/70 truncate">{item.errorMessage}</p>
+                      )}
+                      {item.status === "completed" && item.metaTitle && (
+                        <p className="text-xs text-white/30 truncate">Meta: {item.metaTitle}</p>
+                      )}
+                    </div>
+                    <Badge className={`text-xs shrink-0 ${
+                      item.status === "completed" ? "bg-emerald-500/10 text-emerald-400 border-emerald-500/20" :
+                      item.status === "failed" ? "bg-red-500/10 text-red-400 border-red-500/20" :
+                      item.status === "processing" ? "bg-violet-500/10 text-violet-400 border-violet-500/20" :
+                      "bg-white/5 text-white/30 border-white/10"
+                    }`}>
+                      {item.status}
+                    </Badge>
+                    {item.status === "completed" && (
+                      expandedItems.has(item.id) ? <ChevronUp className="w-3 h-3 text-white/30" /> : <ChevronDown className="w-3 h-3 text-white/30" />
+                    )}
+                  </div>
+
+                  {item.status === "completed" && expandedItems.has(item.id) && (
+                    <div className="border-t border-white/5 p-4 space-y-4">
+                      <DiffField label="Title" before={item.originalTitle ?? ""} after={item.optimizedTitle ?? ""} />
+                      <DiffField label="Description" before={stripHtml(item.originalDescription)} after={stripHtml(item.optimizedDescription)} />
+                      <DiffField label={`Meta title (${item.metaTitle?.length ?? 0} chars)`} before={item.originalMetaTitle ?? ""} after={item.metaTitle ?? ""} />
+                      <DiffField label={`Meta description (${item.metaDescription?.length ?? 0} chars)`} before={item.originalMetaDescription ?? ""} after={item.metaDescription ?? ""} />
+                    </div>
+                  )}
+                </div>
+              ))}
+              {jobData.queue.length > 50 && (
+                <p className="text-xs text-white/30 text-center py-2">
+                  Showing 50 of {jobData.queue.length} products
+                </p>
+              )}
+            </>
           )}
         </div>
       )}

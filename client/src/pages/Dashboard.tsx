@@ -1,10 +1,12 @@
+import { useEffect } from "react";
 import { trpc } from "@/lib/trpc";
 import { useAuth } from "@/_core/hooks/useAuth";
 import { useLocation } from "wouter";
+import { toast } from "sonner";
 import {
   ShoppingBag, Search, FileText, Package, BarChart3, Megaphone, Settings,
   TrendingUp, Zap, CheckCircle2, AlertCircle, Clock, ArrowRight, RefreshCw,
-  Activity, Truck, DollarSign, ShieldCheck
+  Activity, Truck, DollarSign, ShieldCheck, Sparkles, Check, X, Loader2
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -35,6 +37,14 @@ export default function Dashboard() {
   const [, setLocation] = useLocation();
   const utils = trpc.useUtils();
   const { data, isLoading, refetch, isFetching } = trpc.dashboard.stats.useQuery();
+
+  // Best-effort nudge to keep the suggestions feed fresh — the server
+  // throttles actual LLM generation to roughly once every 2 hours
+  // regardless of how often this fires, so it's safe to call on every load.
+  const generateSuggestions = trpc.aiSuggestions.generate.useMutation({
+    onSuccess: (result) => { if (result.created > 0) utils.aiSuggestions.getPending.invalidate(); },
+  });
+  useEffect(() => { generateSuggestions.mutate(); }, []);
 
   const getModuleStatus = (key: string) => {
     if (!data?.automationSettings) return "idle";
@@ -113,6 +123,9 @@ export default function Dashboard() {
         )}
       </div>
 
+      {/* AI Suggestions — real LLM analysis of your actual store data, approve/deny */}
+      <AiSuggestionsPanel />
+
       {/* Module Grid */}
       <div>
         <div className="flex items-center justify-between mb-4">
@@ -184,6 +197,76 @@ export default function Dashboard() {
           )}
         </div>
       </div>
+    </div>
+  );
+}
+
+function AiSuggestionsPanel() {
+  const utils = trpc.useUtils();
+  const { data: suggestions, isLoading } = trpc.aiSuggestions.getPending.useQuery();
+
+  const approveMutation = trpc.aiSuggestions.approve.useMutation({
+    onSuccess: (result, vars) => {
+      if (result.success) toast.success(result.message);
+      else toast.error(result.message);
+      utils.aiSuggestions.getPending.invalidate();
+      utils.dashboard.stats.invalidate();
+      utils.activity.getRecent.invalidate();
+    },
+    onError: (err) => toast.error(err.message),
+  });
+  const denyMutation = trpc.aiSuggestions.deny.useMutation({
+    onSuccess: () => { utils.aiSuggestions.getPending.invalidate(); },
+    onError: (err) => toast.error(err.message),
+  });
+
+  if (!isLoading && (!suggestions || suggestions.length === 0)) return null;
+
+  return (
+    <div className="glass rounded-xl p-6 border border-primary/20">
+      <div className="flex items-center gap-2 mb-4">
+        <Sparkles className="w-4 h-4 text-primary" />
+        <h3 className="text-sm font-semibold text-foreground">AI Suggestions</h3>
+        <span className="text-[10px] text-muted-foreground">Based on your real store data — approve to run, deny to dismiss</span>
+      </div>
+      {isLoading ? (
+        <div className="space-y-3">{Array(2).fill(0).map((_, i) => <Skeleton key={i} className="h-16 rounded-lg" />)}</div>
+      ) : (
+        <div className="space-y-3">
+          {suggestions!.map((s: any) => {
+            const busy = (approveMutation.isPending && approveMutation.variables?.id === s.id) ||
+                         (denyMutation.isPending && denyMutation.variables?.id === s.id);
+            return (
+              <div key={s.id} className="flex items-start gap-3 p-3 rounded-lg bg-secondary/40 border border-border/30">
+                <div className="flex-1 min-w-0">
+                  <p className="text-xs font-semibold text-foreground">{s.title}</p>
+                  <p className="text-[11px] text-muted-foreground mt-1">{s.reasoning}</p>
+                </div>
+                <div className="flex items-center gap-1.5 flex-shrink-0">
+                  <Button
+                    size="sm" variant="outline"
+                    onClick={() => approveMutation.mutate({ id: s.id })}
+                    disabled={busy}
+                    className="h-7 gap-1 text-[11px] border-emerald-500/30 text-emerald-400 hover:bg-emerald-500/10"
+                  >
+                    {busy && approveMutation.variables?.id === s.id ? <Loader2 className="w-3 h-3 animate-spin" /> : <Check className="w-3 h-3" />}
+                    Approve
+                  </Button>
+                  <Button
+                    size="sm" variant="outline"
+                    onClick={() => denyMutation.mutate({ id: s.id })}
+                    disabled={busy}
+                    className="h-7 gap-1 text-[11px] border-border/50 text-muted-foreground hover:bg-secondary/60"
+                  >
+                    {busy && denyMutation.variables?.id === s.id ? <Loader2 className="w-3 h-3 animate-spin" /> : <X className="w-3 h-3" />}
+                    Deny
+                  </Button>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 }

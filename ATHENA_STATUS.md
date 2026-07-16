@@ -141,6 +141,50 @@ found from the Activity Feed errors, plus a page-crash bug:
 - **Dashboard refresh button** restyled from muted grey (read as disabled)
   to active, with a spinner + disabled state while refetching.
 
+## Round 5 — connection gating, AI suggestions, profile/theme, CJ spend, SEO diff
+User confirmed they re-pasted the `ANTHROPIC_API_KEY`/CJ credentials after the
+Round 4 ByteString fix and asked to "proceed with all the real builds worth
+doing." Could not independently verify the key from this sandbox (no Railway
+login access — `/api/health` fetch returned a proxy 403, inconclusive either
+way); user should confirm via a fresh automation run in the Activity Feed.
+Built:
+- **Connection-gated automations** — new `shared/automationRequirements.ts`
+  maps each module to what it actually needs connected (Shopify, CJ-or-DSers,
+  Resend). `db.getConnectionStatus()` computes real booleans; both
+  `scheduler.update` and `autonomous.update` now refuse to enable a module
+  server-side if requirements aren't met (`TRPCError PRECONDITION_FAILED`),
+  and both Scheduler and Automation Hub pages greyed the toggle + show
+  "Not connected" with the specific missing integration before the click even
+  happens. Closes the "automations show success when nothing's connected" gap.
+- **CJ spend on Fulfillment page** — new `fulfillment.getCjSpend` query reads
+  the real `cj_dropshipping`-sourced transactions Accounting already records
+  at order time (no separate estimate); collapsible list with running total
+  under the wallet balance bar.
+- **Dashboard AI suggestions feed** — new `ai_suggestions` table +
+  `server/suggestionsRunner.ts`: gathers real signals (out-of-stock count,
+  open audit issues, days since last blog post, active ad campaigns),
+  sends them to the LLM to propose up to 3 grounded suggestions from a fixed
+  allow-list of already-built actions (run site audit, apply audit fixes,
+  inventory scan, run fulfillment, optimize ad budgets, generate+publish a
+  blog post). Approve runs the real action and logs the real result; deny
+  just dismisses. Self-throttled to ~once/2h regardless of caller. Polled
+  every 5 min via the autonomous scheduler (`/api/scheduled/ai-suggestions`)
+  and nudged on Dashboard load.
+- **Profile page** (`/profile`) — editable display name, photo upload
+  (`auth.uploadAvatar`, stored via `storagePut`), and 5 accent color-theme
+  presets (gold/emerald/sapphire/rose/violet) applied site-wide via a
+  `data-color-theme` attribute on `<html>` and CSS custom properties in
+  `index.css`. Sidebar active-nav-item and gold badges now follow the
+  preset; the logo mark and a few decorative gradients stay fixed by
+  design. New `users.avatarUrl`/`users.themePreset` columns (migration
+  `0022`) — never touched by the login-sync path, so edits persist.
+- **Bulk Catalog Optimizer before/after + catalog view** — the optimization
+  queue already stored original vs. optimized title/description/meta but the
+  UI only ever showed the "after" side. Now shows a real side-by-side diff
+  (strikethrough original → new) for title, description, meta title, meta
+  description, plus a List/Catalog view toggle with real product images
+  (joined from inventory snapshots by Shopify product id).
+
 ## Full code audit — completed
 A 15-module line-by-line audit was done and every finding fixed (auth
 rate-limiting, Shopify API rate-limit/timeout wrapping + fulfillment

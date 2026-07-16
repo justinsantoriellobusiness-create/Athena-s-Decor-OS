@@ -19,6 +19,8 @@ export const users = mysqlTable("users", {
   email: varchar("email", { length: 320 }),
   loginMethod: varchar("loginMethod", { length: 64 }),
   role: mysqlEnum("role", ["user", "admin"]).default("user").notNull(),
+  avatarUrl: text("avatarUrl"),
+  themePreset: varchar("themePreset", { length: 32 }).default("gold").notNull(),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
   updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
   lastSignedIn: timestamp("lastSignedIn").defaultNow().notNull(),
@@ -757,3 +759,23 @@ export const activityLog = mysqlTable("activity_log", {
   createdAt: timestamp("createdAt").defaultNow().notNull(),
 });
 export type ActivityLog = typeof activityLog.$inferSelect;
+
+// ─── AI Suggestions ──────────────────────────────────────────────────────────
+// LLM-generated suggestions derived from real store data (low stock, open
+// audit issues, stale blog, etc). Each one names a concrete, already-built
+// action it will run on approval — never a vague "improve SEO" the app can't
+// actually execute. Denying just dismisses it; nothing runs.
+export const aiSuggestions = mysqlTable("ai_suggestions", {
+  id: int("id").autoincrement().primaryKey(),
+  module: varchar("module", { length: 64 }).notNull(), // inventory | seo | blog | audit | accounting | fulfillment
+  actionType: varchar("actionType", { length: 64 }).notNull(), // maps to a concrete executable action
+  title: varchar("title", { length: 255 }).notNull(),
+  reasoning: text("reasoning").notNull(), // why the AI is suggesting this, referencing the real data it saw
+  actionPayload: json("actionPayload"), // params the executor needs (e.g. { variantId, sku })
+  status: mysqlEnum("status", ["pending", "approved", "denied", "executed", "failed"]).default("pending").notNull(),
+  resultMessage: text("resultMessage"), // proof of what happened on execution/failure
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+  resolvedAt: timestamp("resolvedAt"),
+});
+export type AiSuggestion = typeof aiSuggestions.$inferSelect;
+export type InsertAiSuggestion = typeof aiSuggestions.$inferInsert;

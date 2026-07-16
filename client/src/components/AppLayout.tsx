@@ -5,7 +5,7 @@ import { cn } from "@/lib/utils";
 import {
   LayoutDashboard, ShoppingBag, Search, FileText, Package, BarChart3, Megaphone,
   Settings, Zap, ChevronRight, LogOut, Loader2, ShieldCheck, Bot, TrendingUp, DollarSign,
-  Link2, Mail, Plug, Activity, Truck,
+  Link2, Mail, Plug, Activity, Truck, User,
 } from "lucide-react";
 import { trpc } from "@/lib/trpc";
 import ErrorBoundary from "@/components/ErrorBoundary";
@@ -52,6 +52,7 @@ const navSections = [
       { href: "/integrations", label: "Integrations", icon: Plug },
       { href: "/shopify", label: "Shopify", icon: ShoppingBag },
       { href: "/scheduler", label: "Scheduler", icon: Settings },
+      { href: "/profile", label: "Profile", icon: User },
     ],
   },
 ];
@@ -118,10 +119,9 @@ export default function AppLayout({ children, noPadding }: AppLayoutProps) {
                       onClick={() => setLocation(item.href)}
                       className={cn(
                         "w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm transition-all duration-150",
-                        isActive
-                          ? "bg-violet-600/20 text-violet-300 font-medium"
-                          : "text-white/40 hover:text-white/70 hover:bg-white/5"
+                        isActive ? "font-medium" : "text-white/40 hover:text-white/70 hover:bg-white/5"
                       )}
+                      style={isActive ? { background: "var(--color-primary-a15)", color: "var(--color-primary)" } : undefined}
                     >
                       <Icon className="w-4 h-4 flex-shrink-0" />
                       <span className="flex-1 text-left">{item.label}</span>
@@ -137,15 +137,24 @@ export default function AppLayout({ children, noPadding }: AppLayoutProps) {
         {/* User */}
         <div className="px-3 py-4 border-t border-white/5">
           <div className="flex items-center gap-3 px-3 py-2.5 rounded-lg">
-            <div className="w-7 h-7 rounded-full bg-violet-500/20 flex items-center justify-center flex-shrink-0">
-              <span className="text-xs font-semibold text-violet-300">
-                {user?.name?.charAt(0)?.toUpperCase() || "A"}
-              </span>
-            </div>
-            <div className="flex-1 min-w-0">
+            <button
+              onClick={() => setLocation("/profile")}
+              className="w-7 h-7 rounded-full flex items-center justify-center flex-shrink-0 overflow-hidden"
+              style={{ background: "var(--color-primary-a15)" }}
+              title="Edit profile"
+            >
+              {(user as any)?.avatarUrl ? (
+                <img src={(user as any).avatarUrl} alt="" className="w-full h-full object-cover" />
+              ) : (
+                <span className="text-xs font-semibold" style={{ color: "var(--color-primary)" }}>
+                  {user?.name?.charAt(0)?.toUpperCase() || "A"}
+                </span>
+              )}
+            </button>
+            <button onClick={() => setLocation("/profile")} className="flex-1 min-w-0 text-left" title="Edit profile">
               <p className="text-xs font-medium text-white truncate">{user?.name || "Admin"}</p>
               <p className="text-[10px] text-white/30 truncate">{user?.email || ""}</p>
-            </div>
+            </button>
             <button
               onClick={() => logoutMutation.mutate()}
               className="text-white/30 hover:text-white/60 transition-colors"

@@ -8,6 +8,7 @@ import { Switch } from "@/components/ui/switch";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
+import { unmetRequirements, CONNECTION_LABELS } from "@shared/automationRequirements";
 
 const moduleInfo: Record<string, { label: string; description: string; icon: any; color: string }> = {
   seo: { label: "SEO Automation", description: "Daily keyword research + product optimization", icon: Search, color: "oklch(0.65 0.18 240)" },
@@ -52,6 +53,7 @@ const cronPresets = [
 export default function SchedulerPage() {
   const utils = trpc.useUtils();
   const { data: settings, isLoading } = trpc.scheduler.getAll.useQuery();
+  const { data: connectionStatus } = trpc.scheduler.getConnectionStatus.useQuery();
 
   const updateMutation = trpc.scheduler.update.useMutation({
     onSuccess: () => { utils.scheduler.getAll.invalidate(); },
@@ -59,6 +61,13 @@ export default function SchedulerPage() {
   });
 
   const handleToggle = (module: string, enabled: boolean) => {
+    if (enabled && connectionStatus) {
+      const missing = unmetRequirements(module, connectionStatus);
+      if (missing.length > 0) {
+        toast.error(`Connect ${missing.map((k) => CONNECTION_LABELS[k]).join(" and ")} first`);
+        return;
+      }
+    }
     updateMutation.mutate({ module, enabled });
     toast.success(`${getModuleInfo(module).label} ${enabled ? "enabled" : "disabled"}`);
   };
@@ -76,7 +85,13 @@ export default function SchedulerPage() {
   const handleBulkToggle = async (enabled: boolean) => {
     if (!settings) return;
     setBulkToggling(true);
-    const targets = settings.filter((s: any) => s.enabled !== enabled);
+    let targets = settings.filter((s: any) => s.enabled !== enabled);
+    let skipped = 0;
+    if (enabled && connectionStatus) {
+      const eligible = targets.filter((s: any) => unmetRequirements(s.module, connectionStatus).length === 0);
+      skipped = targets.length - eligible.length;
+      targets = eligible;
+    }
     const outcomes = await Promise.allSettled(
       targets.map((s: any) => updateMutation.mutateAsync({ module: s.module, enabled }))
     );
@@ -84,7 +99,8 @@ export default function SchedulerPage() {
     utils.scheduler.getAll.invalidate();
     setBulkToggling(false);
     if (failed === 0) {
-      toast.success(targets.length ? `${enabled ? "Enabled" : "Disabled"} ${targets.length} automation(s)` : `All automations already ${enabled ? "enabled" : "disabled"}`);
+      const skippedNote = skipped > 0 ? ` (${skipped} skipped — not connected)` : "";
+      toast.success((targets.length ? `${enabled ? "Enabled" : "Disabled"} ${targets.length} automation(s)` : `All automations already ${enabled ? "enabled" : "disabled"}`) + skippedNote);
     } else {
       toast.error(`${targets.length - failed} updated, ${failed} failed`);
     }
@@ -152,6 +168,8 @@ export default function SchedulerPage() {
           settings.map((setting: any) => {
             const info = getModuleInfo(setting.module);
             const Icon = info.icon;
+            const missing = connectionStatus ? unmetRequirements(setting.module, connectionStatus) : [];
+            const blocked = !setting.enabled && missing.length > 0;
 
             return (
               <div key={setting.module} className={cn("glass rounded-xl p-5 transition-all", !setting.enabled && "opacity-60")}>
@@ -170,14 +188,25 @@ export default function SchedulerPage() {
                             <span className="status-dot active" />Running
                           </span>
                         )}
+                        {blocked && (
+                          <span className="badge-error text-[10px]" title={`Requires ${missing.map((k) => CONNECTION_LABELS[k]).join(" and ")} to be connected`}>
+                            Not connected
+                          </span>
+                        )}
                       </div>
                       <Switch
                         checked={setting.enabled}
                         onCheckedChange={(v) => handleToggle(setting.module, v)}
-                        disabled={updateMutation.isPending}
+                        disabled={updateMutation.isPending || blocked}
+                        title={blocked ? `Connect ${missing.map((k) => CONNECTION_LABELS[k]).join(" and ")} first` : undefined}
                       />
                     </div>
                     <p className="text-xs text-muted-foreground mb-3">{info.description}</p>
+                    {blocked && (
+                      <p className="text-[11px] text-red-400/80 mb-2">
+                        Requires {missing.map((k) => CONNECTION_LABELS[k]).join(" and ")} to be connected before this can run.
+                      </p>
+                    )}
 
                     <div className="flex items-center gap-4 flex-wrap">
                       <div className="flex items-center gap-2">

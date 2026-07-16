@@ -50,6 +50,9 @@ import {
   type ZapierWebhook,
   activityLog,
   type ActivityLog,
+  aiSuggestions,
+  type AiSuggestion,
+  type InsertAiSuggestion,
 } from "../drizzle/schema";
 import { ENV } from "./_core/env";
 
@@ -105,6 +108,15 @@ export async function getUserByOpenId(openId: string) {
   if (!db) return undefined;
   const result = await db.select().from(users).where(eq(users.openId, openId)).limit(1);
   return result[0];
+}
+
+// Owner-editable profile fields only — never touches openId/email/role,
+// which are the auth provider's identity fields and re-synced by
+// upsertUser() on login.
+export async function updateUserProfile(id: number, data: { name?: string; avatarUrl?: string; themePreset?: string }): Promise<void> {
+  const db = await getDb();
+  if (!db) return;
+  await db.update(users).set({ ...data, updatedAt: new Date() }).where(eq(users.id, id));
 }
 
 // ─── Shopify Config ───────────────────────────────────────────────────────────
@@ -310,6 +322,27 @@ export async function upsertSourcingAppCredential(app: "autods" | "cj" | "dsers"
   } else {
     await db.insert(sourcingAppCredentials).values({ app, ...data } as any);
   }
+  return;
+}
+
+/**
+ * Single source of truth for "is this integration actually connected" —
+ * used to gate automation toggles so a module can't be turned on (and
+ * report fake success) without what it needs. Checked both client-side
+ * (disable the switch, explain why) and server-side (refuse the update).
+ */
+export async function getConnectionStatus(): Promise<{ shopify: boolean; cjOrDsers: boolean; resend: boolean }> {
+  const [shopifyConfig, cj, dsers] = await Promise.all([
+    getShopifyConfig(),
+    getSourcingAppCredential("cj"),
+    getSourcingAppCredential("dsers"),
+  ]);
+  const { isEmailConfigured } = await import("./_core/email");
+  return {
+    shopify: shopifyConfig?.isConnected === true,
+    cjOrDsers: cj?.isConnected === true || dsers?.isConnected === true,
+    resend: isEmailConfigured(),
+  };
 }
 // ─── Inventory Snapshots ──────────────────────────────────────────────────────
 export async function getInventorySnapshots(limit = 100): Promise<InventorySnapshot[]> {
@@ -1261,6 +1294,39 @@ export async function getRecentActivity(opts?: { limit?: number; module?: string
     return db.select().from(activityLog).where(eq(activityLog.module, opts.module)).orderBy(desc(activityLog.createdAt)).limit(limit);
   }
   return db.select().from(activityLog).orderBy(desc(activityLog.createdAt)).limit(limit);
+}
+
+// ─── AI Suggestions ────────────────────────────────────────────────────────
+export async function getPendingAiSuggestions(): Promise<AiSuggestion[]> {
+  const db = await getDb();
+  if (!db) return [];
+  return db.select().from(aiSuggestions).where(eq(aiSuggestions.status, "pending")).orderBy(desc(aiSuggestions.createdAt));
+}
+
+export async function getRecentAiSuggestions(limit = 20): Promise<AiSuggestion[]> {
+  const db = await getDb();
+  if (!db) return [];
+  return db.select().from(aiSuggestions).orderBy(desc(aiSuggestions.createdAt)).limit(limit);
+}
+
+export async function getAiSuggestionById(id: number): Promise<AiSuggestion | undefined> {
+  const db = await getDb();
+  if (!db) return undefined;
+  const rows = await db.select().from(aiSuggestions).where(eq(aiSuggestions.id, id)).limit(1);
+  return rows[0];
+}
+
+export async function insertAiSuggestions(items: Omit<InsertAiSuggestion, "id" | "createdAt" | "resolvedAt" | "status" | "resultMessage">[]): Promise<number> {
+  const db = await getDb();
+  if (!db || items.length === 0) return 0;
+  await db.insert(aiSuggestions).values(items.map((i) => ({ ...i, status: "pending" as const })));
+  return items.length;
+}
+
+export async function updateAiSuggestion(id: number, data: Partial<Pick<AiSuggestion, "status" | "resultMessage" | "resolvedAt">>): Promise<void> {
+  const db = await getDb();
+  if (!db) return;
+  await db.update(aiSuggestions).set(data).where(eq(aiSuggestions.id, id));
 }
 
 // ─── Inventory: grouped-by-product view for the UI ────────────────────────────
