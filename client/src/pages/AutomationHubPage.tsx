@@ -83,7 +83,7 @@ const MODULES = [
     bg: "bg-yellow-500/10",
     border: "border-yellow-500/20",
     description: "Real product search on CJ Dropshipping if connected; AI-generated ideas for DSers/AliExpress (no public search API for those)",
-    defaultFreq: 24,
+    defaultFreq: 168,
   },
   {
     id: "inventory" as const,
