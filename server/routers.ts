@@ -170,6 +170,16 @@ const shopifyRouter = router({
           lastSyncAt: new Date(),
           productCount: countData.count,
         });
+        // Auto-create the Accounting revenue account and backfill it so the
+        // Accounting tab has real data immediately, not only after the user
+        // separately discovers Accounting → Accounts → Add Account.
+        try {
+          const { ensureShopifyFinancialAccount, syncShopifyOrdersToAccounting } = await import("./db");
+          const accountId = await ensureShopifyFinancialAccount(input.storeDomain);
+          if (accountId) await syncShopifyOrdersToAccounting(accountId);
+        } catch (accErr) {
+          console.warn("[Shopify] Connected, but Accounting auto-setup failed:", accErr);
+        }
         return { success: true, shopName: shopData.shop.name, productCount: countData.count };
             } catch (err: any) {
         console.error("[Shopify] Connection failed:", err);
@@ -2068,36 +2078,9 @@ const accountingRouter = router({
     .mutation(async ({ input }) => {
       const config = await getShopifyConfig();
       if (!config?.isConnected) throw new TRPCError({ code: "BAD_REQUEST", message: "Shopify not connected. Connect your store in Settings first." });
-      const client = await getShopifyClient(config.storeDomain, decryptCredential(config.accessToken) ?? config.accessToken);
-      // Fetch recent orders from Shopify
-      const ordersData = await client.getOrders(250, "any");
-      const orders = ordersData?.orders ?? [];
-      const txns: any[] = [];
-      for (const order of orders) {
-        const orderDate = new Date(order.created_at);
-        const total = parseFloat(order.total_price ?? "0");
-        const shipping = parseFloat(order.total_shipping_price_set?.shop_money?.amount ?? "0");
-        const discount = parseFloat(order.total_discounts ?? "0");
-        const refund = parseFloat(order.total_refunded_set?.shop_money?.amount ?? "0");
-        // Product sales income
-        if (total > 0) {
-          txns.push({ accountId: input.accountId, date: orderDate, description: `Shopify Order #${order.order_number}`, amount: total - shipping, type: "income", category: "product_sales", source: "shopify", taxDeductible: false, externalId: String(order.id), orderId: String(order.order_number), taxCategory: "Schedule C Line 1", isReconciled: false });
-        }
-        // Shipping collected
-        if (shipping > 0) {
-          txns.push({ accountId: input.accountId, date: orderDate, description: `Shopify Shipping #${order.order_number}`, amount: shipping, type: "income", category: "shipping_collected", source: "shopify", taxDeductible: false, externalId: `${order.id}-ship`, orderId: String(order.order_number), isReconciled: false });
-        }
-        // Refunds
-        if (refund > 0) {
-          txns.push({ accountId: input.accountId, date: orderDate, description: `Shopify Refund #${order.order_number}`, amount: -refund, type: "refund", category: "returns_refunds", source: "shopify", taxDeductible: true, taxCategory: "Schedule C Line 2", externalId: `${order.id}-refund`, isReconciled: false });
-        }
-        // Shopify transaction fees (2.9% + 30¢ for Shopify Payments, or 0.5-2% for external)
-        const fee = total * 0.029 + 0.30;
-        txns.push({ accountId: input.accountId, date: orderDate, description: `Shopify Payment Fee #${order.order_number}`, amount: -fee, type: "fee", category: "payment_processing", source: "shopify", taxDeductible: true, taxCategory: "Schedule C Line 10", externalId: `${order.id}-fee`, isReconciled: false });
-      }
-      if (txns.length > 0) await insertTransactions(txns);
-      await updateFinancialAccount(input.accountId, { lastSyncedAt: new Date(), isConnected: true });
-      return { success: true, imported: txns.length, orders: orders.length };
+      const { syncShopifyOrdersToAccounting } = await import("./db");
+      const { imported, orders } = await syncShopifyOrdersToAccounting(input.accountId);
+      return { success: true, imported, orders };
     }),
 
   syncPayPal: protectedProcedure

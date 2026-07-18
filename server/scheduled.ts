@@ -230,6 +230,15 @@ export function registerScheduledRoutes(app: Router) {
     const setting = (await getAllAutomationSettings()).find(s => s.module === "accounting");
     if (!setting?.enabled) return res.json({ skipped: true });
     try {
+      // Self-heal deployments where Shopify was connected before this
+      // auto-created account existed — without this, those stores would
+      // stay permanently excluded from every future sync too.
+      const shopifyConfigForSelfHeal = await getShopifyConfig();
+      if (shopifyConfigForSelfHeal?.isConnected) {
+        const { ensureShopifyFinancialAccount } = await import("./db");
+        await ensureShopifyFinancialAccount(shopifyConfigForSelfHeal.storeDomain);
+      }
+
       const accounts = await getFinancialAccounts();
       const activeAccounts = accounts.filter((a: any) => a.isActive && a.isConnected);
       const results: { account: string; imported: number; skipped: number; flagged: number; error?: string }[] = [];
@@ -239,26 +248,9 @@ export function registerScheduledRoutes(app: Router) {
           let imported = 0, skipped = 0, flagged = 0;
 
           if (account.provider === "shopify") {
-            const config = await getShopifyConfig();
-            if (config?.isConnected) {
-              const client = await getShopifyClient(config.storeDomain, decryptCredential(config.accessToken) ?? config.accessToken);
-              const ordersData = await client.getOrders(250, "any");
-              const orders: any[] = ordersData?.orders ?? [];
-              const txns: any[] = [];
-              for (const order of orders) {
-                const orderDate = new Date(order.created_at);
-                const total = parseFloat(order.total_price ?? "0");
-                const shipping = parseFloat(order.total_shipping_price_set?.shop_money?.amount ?? "0");
-                const refundAmt = parseFloat(order.total_refunded_set?.shop_money?.amount ?? "0");
-                if (total > 0) txns.push({ accountId: account.id, date: orderDate, description: `Shopify Order #${order.order_number}`, amount: total - shipping, type: "income", category: "product_sales", source: "shopify", taxDeductible: false, externalId: String(order.id), orderId: String(order.order_number), taxCategory: "Schedule C Line 1", isReconciled: false });
-                if (shipping > 0) txns.push({ accountId: account.id, date: orderDate, description: `Shopify Shipping #${order.order_number}`, amount: shipping, type: "income", category: "shipping_collected", source: "shopify", taxDeductible: false, externalId: `${order.id}-ship`, isReconciled: false });
-                if (refundAmt > 0) txns.push({ accountId: account.id, date: orderDate, description: `Shopify Refund #${order.order_number}`, amount: -refundAmt, type: "refund", category: "returns_refunds", source: "shopify", taxDeductible: true, taxCategory: "Schedule C Line 2", externalId: `${order.id}-refund`, isReconciled: false });
-                const fee = total * 0.029 + 0.30;
-                txns.push({ accountId: account.id, date: orderDate, description: `Shopify Payment Fee #${order.order_number}`, amount: -fee, type: "fee", category: "payment_processing", source: "shopify", taxDeductible: true, taxCategory: "Schedule C Line 10", externalId: `${order.id}-fee`, isReconciled: false });
-              }
-              const r = await insertTransactions(txns);
-              imported = r.inserted; skipped = r.skipped; flagged = r.flagged;
-            }
+            const { syncShopifyOrdersToAccounting } = await import("./db");
+            const r = await syncShopifyOrdersToAccounting(account.id);
+            imported = r.imported;
           }
           if (account.provider === "paypal" && account.credentials) {
             const creds = decryptCredentials(account.credentials as Record<string, string>);

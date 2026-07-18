@@ -539,6 +539,74 @@ export async function getOrCreateCjExpenseAccount(): Promise<number | undefined>
   return (result[0] as any).insertId;
 }
 
+/**
+ * Find (or silently create) the Shopify revenue account so the Accounting
+ * tab has data as soon as Shopify is connected, instead of staying
+ * permanently empty until the user separately discovers and uses
+ * Accounting → Accounts → Add Account → Shopify (a second, easy-to-miss
+ * connection step on top of the app-wide Shopify connection).
+ */
+export async function ensureShopifyFinancialAccount(storeDomain: string): Promise<number | undefined> {
+  const db = await getDb();
+  if (!db) return undefined;
+  const existing = await db.select().from(financialAccounts)
+    .where(eq(financialAccounts.provider, "shopify"))
+    .limit(1);
+  if (existing[0]) {
+    if (!existing[0].isActive || !existing[0].isConnected) {
+      await db.update(financialAccounts).set({ isActive: true, isConnected: true }).where(eq(financialAccounts.id, existing[0].id));
+    }
+    return existing[0].id;
+  }
+  const result = await db.insert(financialAccounts).values({
+    name: `Shopify — ${storeDomain}`,
+    provider: "shopify",
+    accountType: "revenue",
+    currency: "USD",
+    isConnected: true,
+    isActive: true,
+    notes: "Auto-created when Shopify was connected, so order revenue/fees sync into Accounting automatically.",
+  });
+  return (result[0] as any).insertId;
+}
+
+/**
+ * Pull Shopify orders into the transactions ledger for one financial
+ * account. Shared by the manual "Sync" button, the daily accounting cron,
+ * and the auto-created-account backfill so all three stay in sync instead
+ * of drifting (this used to be duplicated inline in two places).
+ */
+export async function syncShopifyOrdersToAccounting(accountId: number): Promise<{ imported: number; orders: number }> {
+  const config = await getShopifyConfig();
+  if (!config?.isConnected) return { imported: 0, orders: 0 };
+  const { getShopifyClient } = await import("./shopify");
+  const { decryptCredential } = await import("./crypto");
+  const client = await getShopifyClient(config.storeDomain, decryptCredential(config.accessToken) ?? config.accessToken);
+  const ordersData = await client.getOrders(250, "any");
+  const orders: any[] = ordersData?.orders ?? [];
+  const txns: any[] = [];
+  for (const order of orders) {
+    const orderDate = new Date(order.created_at);
+    const total = parseFloat(order.total_price ?? "0");
+    const shipping = parseFloat(order.total_shipping_price_set?.shop_money?.amount ?? "0");
+    const refund = parseFloat(order.total_refunded_set?.shop_money?.amount ?? "0");
+    if (total > 0) {
+      txns.push({ accountId, date: orderDate, description: `Shopify Order #${order.order_number}`, amount: total - shipping, type: "income", category: "product_sales", source: "shopify", taxDeductible: false, externalId: String(order.id), orderId: String(order.order_number), taxCategory: "Schedule C Line 1", isReconciled: false });
+    }
+    if (shipping > 0) {
+      txns.push({ accountId, date: orderDate, description: `Shopify Shipping #${order.order_number}`, amount: shipping, type: "income", category: "shipping_collected", source: "shopify", taxDeductible: false, externalId: `${order.id}-ship`, orderId: String(order.order_number), isReconciled: false });
+    }
+    if (refund > 0) {
+      txns.push({ accountId, date: orderDate, description: `Shopify Refund #${order.order_number}`, amount: -refund, type: "refund", category: "returns_refunds", source: "shopify", taxDeductible: true, taxCategory: "Schedule C Line 2", externalId: `${order.id}-refund`, isReconciled: false });
+    }
+    const fee = total * 0.029 + 0.30;
+    txns.push({ accountId, date: orderDate, description: `Shopify Payment Fee #${order.order_number}`, amount: -fee, type: "fee", category: "payment_processing", source: "shopify", taxDeductible: true, taxCategory: "Schedule C Line 10", externalId: `${order.id}-fee`, isReconciled: false });
+  }
+  const r = txns.length > 0 ? await insertTransactions(txns) : { inserted: 0, skipped: 0, flagged: 0 };
+  await updateFinancialAccount(accountId, { lastSyncedAt: new Date(), isConnected: true });
+  return { imported: r.inserted, orders: orders.length };
+}
+
 // ─── Accounting: Transactions ─────────────────────────────────────────────────
 // ─── Deduplication helpers ────────────────────────────────────────────────────
 import { createHash } from "crypto";
