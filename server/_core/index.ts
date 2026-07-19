@@ -11,6 +11,7 @@ import { createContext } from "./context";
 import { serveStatic, setupVite } from "./vite";
 import { registerScheduledRoutes } from "../scheduled";
 import { registerEmailTrackingRoutes } from "../emailTracking";
+import { registerJarvisBridge } from "../jarvisBridge";
 import { seedDefaultSettings, seedIntegrationsFromEnv } from "../seed";
 import { getDb } from "../db";
 import { startInternalScheduler, stopInternalScheduler } from "./scheduler";
@@ -62,6 +63,7 @@ async function startServer() {
   registerPasswordAuthRoutes(app);
   registerScheduledRoutes(app);
   registerEmailTrackingRoutes(app);
+  registerJarvisBridge(app);
   await runMigrations();
   await seedDefaultSettings();
   await seedIntegrationsFromEnv();
