@@ -109,6 +109,9 @@ import {
   getRecentActivity,
   getInventoryGroupedByProduct,
   logActivity,
+  getAppSettings,
+  upsertAppSettings,
+  getBusinessContextForAI,
 } from "./db";
 import { runInventoryScan, computeStatus } from "./inventoryRunner";
 import { runAutoFulfillment, deriveOrderStatus } from "./fulfillmentRunner";
@@ -3775,6 +3778,77 @@ const activityRouter = router({
     .query(async ({ input }) => getRecentActivity({ limit: input?.limit, module: input?.module })),
 });
 
+// ─── Settings Router (branding + business profile) ────────────────────────────
+const LOGO_EXT_BY_MIME: Record<string, string> = {
+  "image/png": "png",
+  "image/jpeg": "jpg",
+  "image/webp": "webp",
+  "image/svg+xml": "svg",
+};
+
+const settingsRouter = router({
+  get: protectedProcedure.query(async () => {
+    const settings = await getAppSettings();
+    return {
+      appName: settings?.appName || null,
+      logoUrl: settings?.logoUrl || null,
+      themeId: settings?.themeId || "violet",
+      businessName: settings?.businessName || "",
+      niche: settings?.niche || "",
+      targetAudience: settings?.targetAudience || "",
+      brandVoice: settings?.brandVoice || "",
+      priceTier: settings?.priceTier || null,
+      keyCategories: settings?.keyCategories || "",
+      competitors: settings?.competitors || "",
+      uniqueValue: settings?.uniqueValue || "",
+      website: settings?.website || "",
+      additionalNotes: settings?.additionalNotes || "",
+    };
+  }),
+
+  update: protectedProcedure
+    .input(z.object({
+      appName: z.string().max(120).optional(),
+      themeId: z.string().max(32).optional(),
+      businessName: z.string().max(255).optional(),
+      niche: z.string().max(255).optional(),
+      targetAudience: z.string().max(2000).optional(),
+      brandVoice: z.string().max(2000).optional(),
+      priceTier: z.enum(["budget", "mid_range", "premium", "luxury"]).optional(),
+      keyCategories: z.string().max(2000).optional(),
+      competitors: z.string().max(2000).optional(),
+      uniqueValue: z.string().max(2000).optional(),
+      website: z.string().max(255).optional(),
+      additionalNotes: z.string().max(4000).optional(),
+    }))
+    .mutation(async ({ input }) => {
+      await upsertAppSettings(input);
+      return { success: true };
+    }),
+
+  uploadLogo: protectedProcedure
+    .input(z.object({ dataUrl: z.string().min(1) }))
+    .mutation(async ({ input }) => {
+      const match = input.dataUrl.match(/^data:(image\/(?:png|jpeg|webp|svg\+xml));base64,(.+)$/);
+      if (!match) throw new TRPCError({ code: "BAD_REQUEST", message: "Logo must be a PNG, JPEG, WebP, or SVG image." });
+      const [, mime, base64] = match;
+      const buf = Buffer.from(base64, "base64");
+      if (buf.length > 2 * 1024 * 1024) throw new TRPCError({ code: "BAD_REQUEST", message: "Logo must be under 2MB." });
+      try {
+        const { url } = await storagePut(`branding/logo-${Date.now()}.${LOGO_EXT_BY_MIME[mime]}`, buf, mime);
+        await upsertAppSettings({ logoUrl: url });
+        return { success: true, url };
+      } catch (err: any) {
+        throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: err.message || "Logo upload failed. File storage may not be configured on this deployment." });
+      }
+    }),
+
+  removeLogo: protectedProcedure.mutation(async () => {
+    await upsertAppSettings({ logoUrl: null });
+    return { success: true };
+  }),
+});
+
 // ─── App Router ───────────────────────────────────────────────────────────────
 export const appRouter = router({
   system: systemRouter,
@@ -3797,6 +3871,7 @@ export const appRouter = router({
   backlinker: backlinkerRouter,
   emailCampaigns: emailCampaignsRouter,
   autonomous: autonomousRouter,
+  settings: settingsRouter,
 });
 
 export type AppRouter = typeof appRouter;

@@ -92,6 +92,17 @@ export default function SourcingPage() {
     },
     onError: (e) => { setBulkImportRunning(false); toast.error(e.message); },
   });
+  // Kicks off the full Bulk Catalog Optimizer job (the SEO page's queue-based
+  // optimizer, not the lighter inline rewrite the "Auto-Optimize SEO" toggle
+  // does at import time) so "Import & Optimize All" is a genuine single click
+  // instead of import-then-remember-to-go-optimize-separately.
+  const startBulkOptimizeMutation = trpc.seo.startBulkOptimize.useMutation({
+    onSuccess: (d) => {
+      toast.success(`Optimizing ${d.totalProducts} catalog products — track progress on the SEO page.`);
+    },
+    onError: (e) => toast.error(`Import finished, but catalog optimization failed to start: ${e.message}`),
+  });
+  const [importAndOptimizeRunning, setImportAndOptimizeRunning] = useState(false);
   const pushToCjMutation = trpc.sourcing.pushToCjFavorites.useMutation({
     onSuccess: (d) => toast.success(`Added ${d.pushed} products to CJ Favorites`),
     onError: (e) => toast.error(e.message),
@@ -123,6 +134,28 @@ export default function SourcingPage() {
     if (!selectedSpec) return;
     setBulkImportRunning(true);
     bulkImportMutation.mutate({ specId: selectedSpec, bestPicksOnly, autoOptimize });
+  };
+
+  const handleImportAndOptimizeAll = async () => {
+    if (!selectedSpec) return;
+    setImportAndOptimizeRunning(true);
+    setBulkImportRunning(true);
+    try {
+      // Skip the per-product inline rewrite here — the catalog optimizer
+      // that runs next already rewrites title/description/meta for every
+      // product, so doing both would be a redundant, slower LLM pass.
+      const importResult = await bulkImportMutation.mutateAsync({ specId: selectedSpec, bestPicksOnly, autoOptimize: false });
+      setBulkImportRunning(false);
+      if (importResult.imported > 0) {
+        await startBulkOptimizeMutation.mutateAsync();
+      } else {
+        toast.warning("Nothing was imported, so catalog optimization wasn't started.");
+      }
+    } catch {
+      // Errors are already surfaced via each mutation's onError toast.
+    } finally {
+      setImportAndOptimizeRunning(false);
+    }
   };
 
   const handlePushToCj = (ids?: number[]) => {
@@ -229,11 +262,22 @@ export default function SourcingPage() {
                 <Button
                   size="sm"
                   onClick={handleBulkImport}
-                  disabled={bulkImportMutation.isPending || pendingCount === 0}
+                  disabled={bulkImportMutation.isPending || importAndOptimizeRunning || pendingCount === 0}
                   className="bg-emerald-600 hover:bg-emerald-500"
                 >
                   {bulkImportMutation.isPending ? <RefreshCw className="w-4 h-4 mr-2 animate-spin" /> : <Download className="w-4 h-4 mr-2" />}
                   Bulk Import {pendingCount > 0 ? `(${pendingCount})` : ""}
+                </Button>
+
+                <Button
+                  size="sm"
+                  onClick={handleImportAndOptimizeAll}
+                  disabled={bulkImportMutation.isPending || importAndOptimizeRunning || pendingCount === 0}
+                  title="Imports the selected products, then runs the full Bulk Catalog Optimizer on your whole Shopify catalog"
+                  className="bg-gradient-to-r from-emerald-600 to-violet-600 hover:from-emerald-500 hover:to-violet-500"
+                >
+                  {importAndOptimizeRunning ? <RefreshCw className="w-4 h-4 mr-2 animate-spin" /> : <Sparkles className="w-4 h-4 mr-2" />}
+                  Import & Optimize All {pendingCount > 0 ? `(${pendingCount})` : ""}
                 </Button>
 
                 <Button

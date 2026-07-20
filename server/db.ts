@@ -50,6 +50,8 @@ import {
   type ZapierWebhook,
   activityLog,
   type ActivityLog,
+  appSettings,
+  type AppSettings,
 } from "../drizzle/schema";
 import { ENV } from "./_core/env";
 
@@ -124,6 +126,50 @@ export async function upsertShopifyConfig(data: Partial<ShopifyConfig> & { store
   } else {
     await db.insert(shopifyConfig).values(data as any);
   }
+}
+
+// ─── App Settings (branding + business profile) ───────────────────────────────
+export async function getAppSettings(): Promise<AppSettings | undefined> {
+  const db = await getDb();
+  if (!db) return undefined;
+  const result = await db.select().from(appSettings).limit(1);
+  return result[0];
+}
+
+export async function upsertAppSettings(data: Partial<AppSettings>): Promise<void> {
+  const db = await getDb();
+  if (!db) return;
+  const existing = await getAppSettings();
+  if (existing) {
+    await db.update(appSettings).set({ ...data, updatedAt: new Date() }).where(eq(appSettings.id, existing.id));
+  } else {
+    await db.insert(appSettings).values(data as any);
+  }
+}
+
+/**
+ * Builds a compact business-context block to prepend to AI prompts (sourcing
+ * spec suggestions, backlinker targeting, blog/SEO copy) so generated
+ * content reflects this specific store instead of generic home-decor
+ * boilerplate. Returns "" when no profile has been filled in yet, so
+ * callers can safely inline it into a prompt unconditionally.
+ */
+export async function getBusinessContextForAI(): Promise<string> {
+  const settings = await getAppSettings();
+  if (!settings) return "";
+  const lines: string[] = [];
+  if (settings.businessName) lines.push(`Business name: ${settings.businessName}`);
+  if (settings.niche) lines.push(`Niche/specialty: ${settings.niche}`);
+  if (settings.targetAudience) lines.push(`Target audience: ${settings.targetAudience}`);
+  if (settings.brandVoice) lines.push(`Brand voice/tone: ${settings.brandVoice}`);
+  if (settings.priceTier) lines.push(`Price positioning: ${settings.priceTier.replace(/_/g, " ")}`);
+  if (settings.keyCategories) lines.push(`Key product categories: ${settings.keyCategories}`);
+  if (settings.competitors) lines.push(`Known competitors: ${settings.competitors}`);
+  if (settings.uniqueValue) lines.push(`Unique value proposition: ${settings.uniqueValue}`);
+  if (settings.website) lines.push(`Website: ${settings.website}`);
+  if (settings.additionalNotes) lines.push(`Additional context: ${settings.additionalNotes}`);
+  if (lines.length === 0) return "";
+  return `Business profile (use this to keep suggestions relevant to THIS store, not generic home decor):\n${lines.join("\n")}`;
 }
 
 // ─── Automation Settings ──────────────────────────────────────────────────────

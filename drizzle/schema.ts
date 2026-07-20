@@ -42,6 +42,31 @@ export const shopifyConfig = mysqlTable("shopify_config", {
 
 export type ShopifyConfig = typeof shopifyConfig.$inferSelect;
 
+// ─── App Settings (branding + business profile, singleton row) ───────────────
+// Branding fields drive the sidebar/header name+logo and the dashboard color
+// theme. Business-profile fields are fed into AI prompts (sourcing spec
+// suggestions, backlinker targeting, blog/SEO copy) so generated content is
+// relevant to this specific store instead of generic home-decor boilerplate.
+export const appSettings = mysqlTable("app_settings", {
+  id: int("id").autoincrement().primaryKey(),
+  appName: varchar("appName", { length: 120 }),
+  logoUrl: text("logoUrl"),
+  themeId: varchar("themeId", { length: 32 }).default("violet").notNull(),
+  businessName: varchar("businessName", { length: 255 }),
+  niche: varchar("niche", { length: 255 }),
+  targetAudience: text("targetAudience"),
+  brandVoice: text("brandVoice"),
+  priceTier: mysqlEnum("priceTier", ["budget", "mid_range", "premium", "luxury"]),
+  keyCategories: text("keyCategories"),
+  competitors: text("competitors"),
+  uniqueValue: text("uniqueValue"),
+  website: varchar("website", { length: 255 }),
+  additionalNotes: text("additionalNotes"),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+  updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+});
+export type AppSettings = typeof appSettings.$inferSelect;
+
 // ─── Automation Settings ──────────────────────────────────────────────────────
 export const automationSettings = mysqlTable("automation_settings", {
   id: int("id").autoincrement().primaryKey(),

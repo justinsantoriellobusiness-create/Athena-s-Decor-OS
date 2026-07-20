@@ -5,10 +5,11 @@ import { cn } from "@/lib/utils";
 import {
   LayoutDashboard, ShoppingBag, Search, FileText, Package, BarChart3, Megaphone,
   Settings, Zap, ChevronRight, LogOut, Loader2, ShieldCheck, Bot, TrendingUp, DollarSign,
-  Link2, Mail, Plug, Activity, Truck,
+  Link2, Mail, Plug, Activity, Truck, UserCog,
 } from "lucide-react";
 import { trpc } from "@/lib/trpc";
 import ErrorBoundary from "@/components/ErrorBoundary";
+import { getTheme } from "@/lib/themes";
 
 const navSections = [
   {
@@ -49,6 +50,7 @@ const navSections = [
   {
     label: "Settings",
     items: [
+      { href: "/settings", label: "Profile & Branding", icon: UserCog },
       { href: "/integrations", label: "Integrations", icon: Plug },
       { href: "/shopify", label: "Shopify", icon: ShoppingBag },
       { href: "/scheduler", label: "Scheduler", icon: Settings },
@@ -67,6 +69,12 @@ export default function AppLayout({ children, noPadding }: AppLayoutProps) {
   const logoutMutation = trpc.auth.logout.useMutation({
     onSuccess: () => { setLocation("/login"); },
   });
+  // enabled: isAuthenticated — settings.get is a protectedProcedure, so
+  // firing it before auth resolves would 401 and log noise on every load.
+  const settingsQuery = trpc.settings.get.useQuery(undefined, { enabled: isAuthenticated });
+  const theme = getTheme(settingsQuery.data?.themeId);
+  const appName = settingsQuery.data?.appName || "Athena's OS";
+  const logoUrl = settingsQuery.data?.logoUrl;
 
   if (loading) {
     return (
@@ -93,11 +101,18 @@ export default function AppLayout({ children, noPadding }: AppLayoutProps) {
         {/* Logo */}
         <div className="h-16 flex items-center px-5 border-b border-white/5">
           <div className="flex items-center gap-2.5">
-            <div className="w-8 h-8 rounded-lg flex items-center justify-center bg-gradient-to-br from-violet-500 to-violet-700">
-              <Zap className="w-4 h-4 text-white" />
-            </div>
-            <div>
-              <p className="text-sm font-semibold leading-tight text-white">Athena's OS</p>
+            {logoUrl ? (
+              <img src={logoUrl} alt={appName} className="w-8 h-8 rounded-lg object-cover flex-shrink-0" />
+            ) : (
+              <div
+                className="w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0"
+                style={{ background: `linear-gradient(to bottom right, ${theme.gradientFrom}, ${theme.gradientTo})` }}
+              >
+                <Zap className="w-4 h-4 text-white" />
+              </div>
+            )}
+            <div className="min-w-0">
+              <p className="text-sm font-semibold leading-tight text-white truncate">{appName}</p>
               <p className="text-[10px] text-white/30 leading-tight">Automation Platform</p>
             </div>
           </div>
@@ -116,11 +131,10 @@ export default function AppLayout({ children, noPadding }: AppLayoutProps) {
                     <button
                       key={item.href}
                       onClick={() => setLocation(item.href)}
+                      style={isActive ? { backgroundColor: theme.activeBg, color: theme.activeText } : undefined}
                       className={cn(
                         "w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm transition-all duration-150",
-                        isActive
-                          ? "bg-violet-600/20 text-violet-300 font-medium"
-                          : "text-white/40 hover:text-white/70 hover:bg-white/5"
+                        isActive ? "font-medium" : "text-white/40 hover:text-white/70 hover:bg-white/5"
                       )}
                     >
                       <Icon className="w-4 h-4 flex-shrink-0" />
@@ -137,8 +151,8 @@ export default function AppLayout({ children, noPadding }: AppLayoutProps) {
         {/* User */}
         <div className="px-3 py-4 border-t border-white/5">
           <div className="flex items-center gap-3 px-3 py-2.5 rounded-lg">
-            <div className="w-7 h-7 rounded-full bg-violet-500/20 flex items-center justify-center flex-shrink-0">
-              <span className="text-xs font-semibold text-violet-300">
+            <div className="w-7 h-7 rounded-full flex items-center justify-center flex-shrink-0" style={{ backgroundColor: theme.activeBg }}>
+              <span className="text-xs font-semibold" style={{ color: theme.activeText }}>
                 {user?.name?.charAt(0)?.toUpperCase() || "A"}
               </span>
             </div>
