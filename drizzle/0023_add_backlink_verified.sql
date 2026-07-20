@@ -1,0 +1,1 @@
+ALTER TABLE `backlink_opportunities` ADD `isVerified` boolean DEFAULT false NOT NULL;

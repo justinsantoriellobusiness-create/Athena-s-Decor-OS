@@ -554,6 +554,9 @@ export const backlinkOpportunities = mysqlTable("backlink_opportunities", {
   seoValue: mysqlEnum("seoValue", ["high", "medium", "low"]).default("medium"),
   type: mysqlEnum("type", ["news", "blog", "forum", "directory", "social", "competitor"]).default("blog"),
   status: mysqlEnum("status", ["new", "outreach_sent", "linked", "rejected", "pending"]).default("new").notNull(),
+  // True when siteUrl came from a live Firecrawl web search (a real,
+  // reachable site) rather than being invented by the LLM.
+  isVerified: boolean("isVerified").default(false).notNull(),
   outreachEmail: varchar("outreachEmail", { length: 255 }),
   outreachMessage: text("outreachMessage"),
   outreachSentAt: timestamp("outreachSentAt"),

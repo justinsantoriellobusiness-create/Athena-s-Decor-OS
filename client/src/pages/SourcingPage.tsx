@@ -46,6 +46,7 @@ export default function SourcingPage() {
   const [autoOptimize, setAutoOptimize] = useState(false);
   const [bestPicksOnly, setBestPicksOnly] = useState(true);
   const [bulkImportRunning, setBulkImportRunning] = useState(false);
+  const [specSuggestions, setSpecSuggestions] = useState<Array<{ name: string; keywords: string[]; categories: string[]; minPrice: number; maxPrice: number; rationale: string }>>([]);
 
   const [newSpec, setNewSpec] = useState({
     name: "",
@@ -105,6 +106,13 @@ export default function SourcingPage() {
   const [importAndOptimizeRunning, setImportAndOptimizeRunning] = useState(false);
   const pushToCjMutation = trpc.sourcing.pushToCjFavorites.useMutation({
     onSuccess: (d) => toast.success(`Added ${d.pushed} products to CJ Favorites`),
+    onError: (e) => toast.error(e.message),
+  });
+  const suggestSpecsMutation = trpc.sourcing.suggestSpecs.useMutation({
+    onSuccess: (d) => {
+      if (d.suggestions.length === 0) toast.warning("No suggestions came back — try again in a moment.");
+      setSpecSuggestions(d.suggestions);
+    },
     onError: (e) => toast.error(e.message),
   });
 
@@ -464,6 +472,74 @@ export default function SourcingPage() {
 
         {/* ── Specs Tab ── */}
         <TabsContent value="specs" className="space-y-4 mt-4">
+          <div className="flex items-center justify-between">
+            <p className="text-white/40 text-xs max-w-md">AI reviews your Business Profile (Settings) and current Shopify catalog to suggest new specs that fill a real gap, instead of duplicating what you already sell.</p>
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => suggestSpecsMutation.mutate()}
+              disabled={suggestSpecsMutation.isPending}
+              className="border-violet-500/30 text-violet-300 hover:bg-violet-500/10 flex-shrink-0"
+            >
+              {suggestSpecsMutation.isPending ? <RefreshCw className="w-3.5 h-3.5 mr-1.5 animate-spin" /> : <Sparkles className="w-3.5 h-3.5 mr-1.5" />}
+              Suggest Specs
+            </Button>
+          </div>
+
+          {specSuggestions.length > 0 && (
+            <div className="grid gap-3">
+              {specSuggestions.map((s, i) => (
+                <Card key={i} className="bg-violet-500/5 border-violet-500/20">
+                  <CardContent className="p-4">
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="min-w-0">
+                        <div className="flex items-center gap-2 mb-1">
+                          <Sparkles className="w-3.5 h-3.5 text-violet-400 flex-shrink-0" />
+                          <h3 className="text-white font-medium">{s.name}</h3>
+                        </div>
+                        <div className="flex gap-1.5 flex-wrap mb-2">
+                          {s.keywords.map((kw) => <Badge key={kw} className="bg-white/5 text-white/50 border-white/10 text-[10px]">{kw}</Badge>)}
+                        </div>
+                        <p className="text-white/50 text-xs mb-1">{s.rationale}</p>
+                        <p className="text-white/30 text-xs">
+                          ${s.minPrice}–${s.maxPrice} · {s.categories.join(", ")}
+                        </p>
+                      </div>
+                      <div className="flex gap-2 flex-shrink-0">
+                        <Button
+                          size="sm"
+                          className="bg-violet-600 hover:bg-violet-500 h-8"
+                          disabled={createSpecMutation.isPending}
+                          onClick={() => {
+                            createSpecMutation.mutate({
+                              name: s.name,
+                              keywords: s.keywords,
+                              categories: s.categories,
+                              minPrice: s.minPrice,
+                              maxPrice: s.maxPrice,
+                              sources: ["cj", "dsers", "aliexpress"],
+                            });
+                            setSpecSuggestions((prev) => prev.filter((_, idx) => idx !== i));
+                          }}
+                        >
+                          <Plus className="w-3.5 h-3.5 mr-1" />Create
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          className="border-white/10 text-white/40 hover:text-white h-8"
+                          onClick={() => setSpecSuggestions((prev) => prev.filter((_, idx) => idx !== i))}
+                        >
+                          <XCircle className="w-3.5 h-3.5" />
+                        </Button>
+                      </div>
+                    </div>
+                  </CardContent>
+                </Card>
+              ))}
+            </div>
+          )}
+
           <div className="grid gap-4">
             {specs.map((spec) => (
               <Card key={spec.id} className="bg-white/5 border-white/10">

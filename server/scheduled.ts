@@ -55,6 +55,8 @@ import { notifyOwner } from "./_core/notification";
 import { ENV } from "./_core/env";
 import { INTERNAL_CRON_SECRET_HEADER } from "./_core/scheduler";
 import { createAndPublishBlogPost } from "./blogPublish";
+import { isFirecrawlConfigured, searchRealBacklinkCandidates } from "./_core/firecrawl";
+import { getBusinessContextForAI } from "./db";
 
 // Autonomous config rows don't self-throttle — without this check, calling
 // an /api/scheduled/* route on every poll tick would re-run every enabled
@@ -459,11 +461,52 @@ export function registerScheduledRoutes(app: Router) {
         const campaigns = await getBacklinkCampaigns(config.userId);
         const activeCampaign = campaigns.find((c: any) => c.status === "active");
         if (!activeCampaign) continue;
-        const prompt = `Identify ${count} best websites for backlinks for a "${niche}" e-commerce store. Return JSON with field "sites" containing array of: siteName, siteUrl, pageUrl, pageTitle, type (news/blog/forum/directory/social), domainAuthority (1-100), relevanceScore (1-100), seoValue (high/medium/low), outreachEmail, outreachMessage, whyBest.`;
-        const response = await invokeLLM({ messages: [{ role: "user", content: prompt }], response_format: { type: "json_schema", json_schema: { name: "sites", strict: true, schema: { type: "object", properties: { sites: { type: "array", items: { type: "object", properties: { siteName: { type: "string" }, siteUrl: { type: "string" }, pageUrl: { type: "string" }, pageTitle: { type: "string" }, type: { type: "string" }, domainAuthority: { type: "number" }, relevanceScore: { type: "number" }, seoValue: { type: "string" }, outreachEmail: { type: "string" }, outreachMessage: { type: "string" }, whyBest: { type: "string" } }, required: ["siteName","siteUrl","pageUrl","pageTitle","type","domainAuthority","relevanceScore","seoValue","outreachEmail","outreachMessage","whyBest"], additionalProperties: false } } }, required: ["sites"], additionalProperties: false } } } });
-        const raw = response.choices[0].message.content;
-        const parsed = JSON.parse(typeof raw === "string" ? raw : JSON.stringify(raw));
-        const opportunities = (parsed.sites || []).map((s: any) => ({ ...s, campaignId: activeCampaign.id, userId: config.userId, status: "new" as const, outreachEmail: null, notes: `AI-suggested target, not verified — confirm it's real before reaching out. ${s.whyBest ?? ""}`.trim() }));
+
+        const businessContext = await getBusinessContextForAI();
+        let opportunities: any[] = [];
+
+        // Real, live-searched sites when Firecrawl is configured — a
+        // fabricated site name/URL is useless for actual outreach.
+        if (isFirecrawlConfigured()) {
+          const candidates = await searchRealBacklinkCandidates(niche, count);
+          if (candidates.length > 0) {
+            const prompt = `You are an SEO backlink strategist for a "${niche}" e-commerce store.
+${businessContext}
+Below are REAL websites found via live web search (same order, do not skip or reorder). For EACH one, assess its fit for a backlink.
+
+Real sites found:
+${candidates.map((c, i) => `${i + 1}. ${c.title} — ${c.url}${c.description ? ` — ${c.description}` : ""}`).join("\n")}
+
+Return JSON with exactly ${candidates.length} items in the same order, field "sites" with: pageTitle, type (news/blog/forum/directory/social/competitor), domainAuthority (1-100 estimate), relevanceScore (1-100), seoValue (high/medium/low), whyBest (1 sentence), outreachMessage (2-3 sentences).`;
+            const response = await invokeLLM({ messages: [{ role: "user", content: prompt }], response_format: { type: "json_schema", json_schema: { name: "sites", strict: true, schema: { type: "object", properties: { sites: { type: "array", items: { type: "object", properties: { pageTitle: { type: "string" }, type: { type: "string" }, domainAuthority: { type: "number" }, relevanceScore: { type: "number" }, seoValue: { type: "string" }, whyBest: { type: "string" }, outreachMessage: { type: "string" } }, required: ["pageTitle","type","domainAuthority","relevanceScore","seoValue","whyBest","outreachMessage"], additionalProperties: false } } }, required: ["sites"], additionalProperties: false } } } });
+            const raw = response.choices[0].message.content;
+            const parsed = JSON.parse(typeof raw === "string" ? raw : JSON.stringify(raw));
+            const assessments = (parsed.sites || []) as any[];
+            opportunities = candidates.map((c, i) => {
+              const a = assessments[i] || {};
+              return {
+                campaignId: activeCampaign.id, userId: config.userId, status: "new" as const,
+                siteName: c.title, siteUrl: c.url, pageUrl: c.url,
+                pageTitle: a.pageTitle || c.title, type: a.type || "blog",
+                domainAuthority: typeof a.domainAuthority === "number" ? a.domainAuthority : 0,
+                relevanceScore: typeof a.relevanceScore === "number" ? a.relevanceScore : 50,
+                seoValue: a.seoValue || "medium",
+                isVerified: true, outreachEmail: null, outreachMessage: a.outreachMessage || "",
+                notes: `Found via live web search — a real, reachable site. Still verify a real contact/editor email before outreach. ${a.whyBest ?? ""}`.trim(),
+              };
+            });
+          }
+        }
+
+        // Fallback: no Firecrawl configured, or search returned nothing usable.
+        if (opportunities.length === 0) {
+          const prompt = `Identify ${count} best websites for backlinks for a "${niche}" e-commerce store. ${businessContext}\nYou have no live web access, so these are unverified candidates. Return JSON with field "sites" containing array of: siteName, siteUrl, pageUrl, pageTitle, type (news/blog/forum/directory/social), domainAuthority (1-100), relevanceScore (1-100), seoValue (high/medium/low), outreachEmail, outreachMessage, whyBest.`;
+          const response = await invokeLLM({ messages: [{ role: "user", content: prompt }], response_format: { type: "json_schema", json_schema: { name: "sites", strict: true, schema: { type: "object", properties: { sites: { type: "array", items: { type: "object", properties: { siteName: { type: "string" }, siteUrl: { type: "string" }, pageUrl: { type: "string" }, pageTitle: { type: "string" }, type: { type: "string" }, domainAuthority: { type: "number" }, relevanceScore: { type: "number" }, seoValue: { type: "string" }, outreachEmail: { type: "string" }, outreachMessage: { type: "string" }, whyBest: { type: "string" } }, required: ["siteName","siteUrl","pageUrl","pageTitle","type","domainAuthority","relevanceScore","seoValue","outreachEmail","outreachMessage","whyBest"], additionalProperties: false } } }, required: ["sites"], additionalProperties: false } } } });
+          const raw = response.choices[0].message.content;
+          const parsed = JSON.parse(typeof raw === "string" ? raw : JSON.stringify(raw));
+          opportunities = (parsed.sites || []).map((s: any) => ({ ...s, campaignId: activeCampaign.id, userId: config.userId, status: "new" as const, isVerified: false, outreachEmail: null, notes: `AI-suggested target, not verified — confirm it's real before reaching out. ${s.whyBest ?? ""}`.trim() }));
+        }
+
         if (opportunities.length > 0) await insertBacklinkOpportunities(opportunities);
         await upsertAutonomousConfig(config.userId, "backlinker", { lastAutoRunAt: new Date(), nextAutoRunAt: new Date(Date.now() + config.frequencyHours * 3600000) });
         totalOpportunities += opportunities.length;
