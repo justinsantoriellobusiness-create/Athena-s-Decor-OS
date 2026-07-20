@@ -45,6 +45,7 @@ import {
   upsertSourcingAppCredential,
   getInventorySnapshots,
   getInventorySnapshotByVariant,
+  getInventorySnapshotsByVariantIds,
   setInventorySnapshotShopifyStock,
   setInventorySnapshotProductStatus,
   getAdCampaigns,
@@ -116,7 +117,7 @@ import {
 } from "./db";
 import { runInventoryScan, computeStatus } from "./inventoryRunner";
 import { runAutoFulfillment, deriveOrderStatus } from "./fulfillmentRunner";
-import { getCjAccessToken, getCjBalance } from "./_core/cjDropshipping";
+import { getCjAccessToken, getCjBalance, getCjOrderStatus } from "./_core/cjDropshipping";
 import { getShopifyClient } from "./shopify";
 import { getConnectedShopifyClient } from "./shopifyHelper";
 import { decryptCredential } from "./crypto";
@@ -1419,8 +1420,28 @@ const fulfillmentRouter = router({
     if (!config?.isConnected) return { connected: false as const, orders: [] };
     const client = await getShopifyClient(config.storeDomain, decryptCredential(config.accessToken) ?? config.accessToken);
     const { orders } = await client.getOrders(100, "any");
+
+    // Two bulk lookups instead of N Shopify/DB calls per order: product
+    // images (from cached inventory-scan data, keyed by variant) and the
+    // real CJ spend already recorded per order by the fulfillment engine.
+    const allVariantIds = Array.from(new Set(
+      orders.flatMap((o: any) => (o.line_items ?? []).map((li: any) => (li.variant_id != null ? String(li.variant_id) : null)).filter(Boolean))
+    )) as string[];
+    const snapshots = await getInventorySnapshotsByVariantIds(allVariantIds);
+    const imageByVariant = new Map(snapshots.map((s) => [s.shopifyVariantId, s.imageUrl]));
+
+    const cjSpendTxns = await getTransactions({ source: "cj_dropshipping", category: "product_cost", limit: 1000 });
+    const costByOrderId = new Map(cjSpendTxns.filter((t) => t.orderId).map((t) => [t.orderId as string, Math.abs(t.amount)]));
+
     const mapped = orders.map((o: any) => {
       const { status, cjOrderId } = deriveOrderStatus(o);
+      const lineItems = (o.line_items ?? []).map((li: any) => ({
+        title: li.title as string,
+        quantity: (li.quantity ?? 1) as number,
+        price: li.price as string,
+        imageUrl: li.variant_id != null ? imageByVariant.get(String(li.variant_id)) ?? null : null,
+      }));
+      const fulfillment = (o.fulfillments ?? [])[0];
       return {
         id: String(o.id),
         orderNumber: o.order_number,
@@ -1430,12 +1451,58 @@ const fulfillmentRouter = router({
         total: o.total_price,
         currency: o.currency ?? "USD",
         createdAt: o.created_at,
-        itemCount: (o.line_items ?? []).reduce((n: number, li: any) => n + (li.quantity ?? 1), 0),
+        itemCount: lineItems.reduce((n: number, li: any) => n + li.quantity, 0),
+        lineItems,
         status,
         cjOrderId,
+        estimatedCost: costByOrderId.get(String(o.id)) ?? null,
+        shippingCity: o.shipping_address?.city ?? null,
+        shippingCountry: o.shipping_address?.country_code ?? null,
+        trackingNumber: fulfillment?.tracking_number ?? null,
+        trackingCompany: fulfillment?.tracking_company ?? null,
+        trackingUrl: fulfillment?.tracking_url ?? null,
       };
     }).sort((a: any, b: any) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
     return { connected: true as const, orders: mapped };
+  }),
+
+  // Live CJ order status/tracking — fetched on demand (expand a row) rather
+  // than for every order on every page load, since it's a real external API
+  // call per order and CJ rate-limits aggressively.
+  getCjOrderDetail: protectedProcedure
+    .input(z.object({ cjOrderId: z.string() }))
+    .query(async ({ input }) => {
+      const cjCred = await getSourcingAppCredential("cj");
+      const rawApiKey = cjCred?.apiKey ? decryptCredentials({ apiKey: cjCred.apiKey }).apiKey : null;
+      const cjEmail = cjCred?.apiSecret ?? null;
+      if (!rawApiKey || !cjEmail) throw new TRPCError({ code: "BAD_REQUEST", message: "CJ Dropshipping isn't connected." });
+      const token = await getCjAccessToken(cjEmail, rawApiKey);
+      if (!token) throw new TRPCError({ code: "BAD_REQUEST", message: "CJ authentication failed — check your CJ credentials in Integrations." });
+      const status = await getCjOrderStatus(token, input.cjOrderId);
+      if (!status) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "CJ didn't return a usable response — try again shortly." });
+      if (status.authError) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "CJ authentication failed while checking this order." });
+      return { orderStatus: status.orderStatus ?? null, trackNumber: status.trackNumber ?? null, logisticName: status.logisticName ?? null };
+    }),
+
+  // Spend visibility — real CJ product cost recorded per order by the
+  // fulfillment engine, aggregated so "how much am I spending" is answered
+  // without digging through Accounting.
+  getSpendSummary: protectedProcedure.query(async () => {
+    const now = new Date();
+    const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+    const last30 = new Date(Date.now() - 30 * 24 * 3600 * 1000);
+    const [monthTxns, last30Txns] = await Promise.all([
+      getTransactions({ source: "cj_dropshipping", category: "product_cost", startDate: startOfMonth, limit: 1000 }),
+      getTransactions({ source: "cj_dropshipping", category: "product_cost", startDate: last30, limit: 1000 }),
+    ]);
+    const sum = (txns: { amount: number }[]) => txns.reduce((s, t) => s + Math.abs(t.amount), 0);
+    const monthToDateSpend = sum(monthTxns);
+    return {
+      monthToDateSpend,
+      last30DaysSpend: sum(last30Txns),
+      monthOrderCount: monthTxns.length,
+      avgCostPerOrder: monthTxns.length > 0 ? monthToDateSpend / monthTxns.length : 0,
+    };
   }),
 
   // Manually kick the same 30-min engine early — shares its DB run-lock, so
