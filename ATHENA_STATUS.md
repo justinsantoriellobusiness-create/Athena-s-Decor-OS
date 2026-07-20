@@ -10,6 +10,57 @@ repo `justinsantoriellobusiness-create/Athena-s-Decor-OS`, branch `main`.
 Stack: Express + tRPC + Drizzle ORM (MySQL) backend, React + Vite frontend,
 Anthropic Claude for all LLM calls.
 
+## Round 5 — Accounting-empty bug fix + new features (branch `claude/cj-shopify-api-connection-9ncdl0`)
+- **Accounting tab was permanently empty for every store** — connecting
+  Shopify (app-wide, `shopifyConfig`) never created a row in
+  `financial_accounts`, which is the table Accounting's queries actually
+  read from. Fixed: `ensureShopifyFinancialAccount()` +
+  `syncShopifyOrdersToAccounting()` (`server/db.ts`) auto-create and
+  backfill the Shopify revenue account on connect, on the daily accounting
+  cron (self-heals existing deployments), and at boot in `seed.ts` — no
+  user action needed after the next deploy.
+- **CJ product-sourcing scrape: daily → weekly** (migration `0021`) — the
+  nightly scrape was tripping CJ's search rate limit two nights running and
+  burning LLM credits on the AI fallback.
+- **Sourcing: AI spec suggestions** (`sourcing.suggestSpecs`) — proposes new
+  sourcing specs based on the Business Profile + a live Shopify catalog
+  sample, avoiding near-duplicates of existing specs. Suggestions are
+  review-only (Create/Dismiss), never auto-created.
+- **Sourcing: one-click "Import & Optimize All"** — bulk-imports selected
+  sourced products to Shopify, then automatically kicks off the full Bulk
+  Catalog Optimizer job (`seo.startBulkOptimize`) on success.
+- **Backlinker: real, live-searched sites** — `discoverOpportunities`,
+  `discoverBestSites`, and the autonomous cron all now call Firecrawl's
+  search API (`server/_core/firecrawl.ts`) first and only use the LLM to
+  assess/pitch real results; falls back to the previous LLM-only invented
+  candidates (clearly disclosed) if `FIRECRAWL_API_KEY` isn't set. New
+  `isVerified` column (migration `0023`) drives a "✓ Real site" / "AI idea"
+  badge in the UI. **`FIRECRAWL_API_KEY` must be added to Railway
+  Variables** for real search in production — it is currently NOT confirmed
+  set there (only available to this dev session's own tooling).
+- **Profile & Branding settings page** (`/settings`, migration `0022` adds
+  singleton `app_settings` table): custom app name + logo (replaces sidebar
+  branding), a picker of 10 dashboard color themes (reskins sidebar/active
+  nav/avatar chrome only — most pages keep fixed per-metric colors by
+  design), and a Business Profile form (niche, target audience, brand
+  voice, price tier, competitors, USP, etc.) exposed via
+  `getBusinessContextForAI()` and now fed into sourcing-spec-suggestion and
+  backlinker prompts so AI output reflects the real store.
+- **chrome-devtools MCP fixed but still not usable in this sandbox** —
+  `.mcp.json` now points it at the pre-installed Chromium
+  (`/opt/pw-browsers/chromium`) instead of a nonexistent system Chrome path,
+  with `--no-sandbox` and an explicit writable profile dir. Chromium itself
+  works fine standalone in this sandbox, but the MCP server still can't
+  hold a stable CDP connection through it ("Target closed") — looks like an
+  environment-level issue with the MCP server's own isolated process, not
+  fixable from `.mcp.json` alone. A live DSers browser walkthrough was
+  requested but not achievable in this session; may work in an
+  interactive/desktop Claude Code session instead.
+- **Not done this round**: DSers bulk-import UI (blocked on the browser
+  issue above — DSers has no public bulk-import API either, so this would
+  need to drive their web UI directly, which needs a live login the user
+  must do themselves).
+
 ## Connected integrations (live, credentials in Railway env vars only)
 - **Shopify** — Admin API via OAuth client-credentials (auto-refreshes on
   every boot). Store domain, client ID/secret in Railway Variables.
