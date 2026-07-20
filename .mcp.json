@@ -8,6 +8,7 @@
         "--executablePath=/opt/pw-browsers/chromium",
         "--headless",
         "--userDataDir=/tmp/claude-0/-home-user-Athena-s-Decor-OS/105480b6-0f10-5098-b641-b08ce42b0f00/scratchpad/chrome-profile",
+        "--proxyServer=http://127.0.0.1:42427",
         "--chromeArg=--no-sandbox",
         "--chromeArg=--disable-setuid-sandbox",
         "--chromeArg=--disable-dev-shm-usage",
