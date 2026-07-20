@@ -50,6 +50,8 @@ import {
   type ZapierWebhook,
   activityLog,
   type ActivityLog,
+  appSettings,
+  type AppSettings,
 } from "../drizzle/schema";
 import { ENV } from "./_core/env";
 
@@ -124,6 +126,50 @@ export async function upsertShopifyConfig(data: Partial<ShopifyConfig> & { store
   } else {
     await db.insert(shopifyConfig).values(data as any);
   }
+}
+
+// ─── App Settings (branding + business profile) ───────────────────────────────
+export async function getAppSettings(): Promise<AppSettings | undefined> {
+  const db = await getDb();
+  if (!db) return undefined;
+  const result = await db.select().from(appSettings).limit(1);
+  return result[0];
+}
+
+export async function upsertAppSettings(data: Partial<AppSettings>): Promise<void> {
+  const db = await getDb();
+  if (!db) return;
+  const existing = await getAppSettings();
+  if (existing) {
+    await db.update(appSettings).set({ ...data, updatedAt: new Date() }).where(eq(appSettings.id, existing.id));
+  } else {
+    await db.insert(appSettings).values(data as any);
+  }
+}
+
+/**
+ * Builds a compact business-context block to prepend to AI prompts (sourcing
+ * spec suggestions, backlinker targeting, blog/SEO copy) so generated
+ * content reflects this specific store instead of generic home-decor
+ * boilerplate. Returns "" when no profile has been filled in yet, so
+ * callers can safely inline it into a prompt unconditionally.
+ */
+export async function getBusinessContextForAI(): Promise<string> {
+  const settings = await getAppSettings();
+  if (!settings) return "";
+  const lines: string[] = [];
+  if (settings.businessName) lines.push(`Business name: ${settings.businessName}`);
+  if (settings.niche) lines.push(`Niche/specialty: ${settings.niche}`);
+  if (settings.targetAudience) lines.push(`Target audience: ${settings.targetAudience}`);
+  if (settings.brandVoice) lines.push(`Brand voice/tone: ${settings.brandVoice}`);
+  if (settings.priceTier) lines.push(`Price positioning: ${settings.priceTier.replace(/_/g, " ")}`);
+  if (settings.keyCategories) lines.push(`Key product categories: ${settings.keyCategories}`);
+  if (settings.competitors) lines.push(`Known competitors: ${settings.competitors}`);
+  if (settings.uniqueValue) lines.push(`Unique value proposition: ${settings.uniqueValue}`);
+  if (settings.website) lines.push(`Website: ${settings.website}`);
+  if (settings.additionalNotes) lines.push(`Additional context: ${settings.additionalNotes}`);
+  if (lines.length === 0) return "";
+  return `Business profile (use this to keep suggestions relevant to THIS store, not generic home decor):\n${lines.join("\n")}`;
 }
 
 // ─── Automation Settings ──────────────────────────────────────────────────────
@@ -537,6 +583,74 @@ export async function getOrCreateCjExpenseAccount(): Promise<number | undefined>
     notes: "Auto-created by the fulfillment engine to record real CJ order spend.",
   });
   return (result[0] as any).insertId;
+}
+
+/**
+ * Find (or silently create) the Shopify revenue account so the Accounting
+ * tab has data as soon as Shopify is connected, instead of staying
+ * permanently empty until the user separately discovers and uses
+ * Accounting → Accounts → Add Account → Shopify (a second, easy-to-miss
+ * connection step on top of the app-wide Shopify connection).
+ */
+export async function ensureShopifyFinancialAccount(storeDomain: string): Promise<number | undefined> {
+  const db = await getDb();
+  if (!db) return undefined;
+  const existing = await db.select().from(financialAccounts)
+    .where(eq(financialAccounts.provider, "shopify"))
+    .limit(1);
+  if (existing[0]) {
+    if (!existing[0].isActive || !existing[0].isConnected) {
+      await db.update(financialAccounts).set({ isActive: true, isConnected: true }).where(eq(financialAccounts.id, existing[0].id));
+    }
+    return existing[0].id;
+  }
+  const result = await db.insert(financialAccounts).values({
+    name: `Shopify — ${storeDomain}`,
+    provider: "shopify",
+    accountType: "revenue",
+    currency: "USD",
+    isConnected: true,
+    isActive: true,
+    notes: "Auto-created when Shopify was connected, so order revenue/fees sync into Accounting automatically.",
+  });
+  return (result[0] as any).insertId;
+}
+
+/**
+ * Pull Shopify orders into the transactions ledger for one financial
+ * account. Shared by the manual "Sync" button, the daily accounting cron,
+ * and the auto-created-account backfill so all three stay in sync instead
+ * of drifting (this used to be duplicated inline in two places).
+ */
+export async function syncShopifyOrdersToAccounting(accountId: number): Promise<{ imported: number; orders: number }> {
+  const config = await getShopifyConfig();
+  if (!config?.isConnected) return { imported: 0, orders: 0 };
+  const { getShopifyClient } = await import("./shopify");
+  const { decryptCredential } = await import("./crypto");
+  const client = await getShopifyClient(config.storeDomain, decryptCredential(config.accessToken) ?? config.accessToken);
+  const ordersData = await client.getOrders(250, "any");
+  const orders: any[] = ordersData?.orders ?? [];
+  const txns: any[] = [];
+  for (const order of orders) {
+    const orderDate = new Date(order.created_at);
+    const total = parseFloat(order.total_price ?? "0");
+    const shipping = parseFloat(order.total_shipping_price_set?.shop_money?.amount ?? "0");
+    const refund = parseFloat(order.total_refunded_set?.shop_money?.amount ?? "0");
+    if (total > 0) {
+      txns.push({ accountId, date: orderDate, description: `Shopify Order #${order.order_number}`, amount: total - shipping, type: "income", category: "product_sales", source: "shopify", taxDeductible: false, externalId: String(order.id), orderId: String(order.order_number), taxCategory: "Schedule C Line 1", isReconciled: false });
+    }
+    if (shipping > 0) {
+      txns.push({ accountId, date: orderDate, description: `Shopify Shipping #${order.order_number}`, amount: shipping, type: "income", category: "shipping_collected", source: "shopify", taxDeductible: false, externalId: `${order.id}-ship`, orderId: String(order.order_number), isReconciled: false });
+    }
+    if (refund > 0) {
+      txns.push({ accountId, date: orderDate, description: `Shopify Refund #${order.order_number}`, amount: -refund, type: "refund", category: "returns_refunds", source: "shopify", taxDeductible: true, taxCategory: "Schedule C Line 2", externalId: `${order.id}-refund`, isReconciled: false });
+    }
+    const fee = total * 0.029 + 0.30;
+    txns.push({ accountId, date: orderDate, description: `Shopify Payment Fee #${order.order_number}`, amount: -fee, type: "fee", category: "payment_processing", source: "shopify", taxDeductible: true, taxCategory: "Schedule C Line 10", externalId: `${order.id}-fee`, isReconciled: false });
+  }
+  const r = txns.length > 0 ? await insertTransactions(txns) : { inserted: 0, skipped: 0, flagged: 0 };
+  await updateFinancialAccount(accountId, { lastSyncedAt: new Date(), isConnected: true });
+  return { imported: r.inserted, orders: orders.length };
 }
 
 // ─── Accounting: Transactions ─────────────────────────────────────────────────

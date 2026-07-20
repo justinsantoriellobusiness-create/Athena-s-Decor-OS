@@ -46,6 +46,7 @@ export default function SourcingPage() {
   const [autoOptimize, setAutoOptimize] = useState(false);
   const [bestPicksOnly, setBestPicksOnly] = useState(true);
   const [bulkImportRunning, setBulkImportRunning] = useState(false);
+  const [specSuggestions, setSpecSuggestions] = useState<Array<{ name: string; keywords: string[]; categories: string[]; minPrice: number; maxPrice: number; rationale: string }>>([]);
 
   const [newSpec, setNewSpec] = useState({
     name: "",
@@ -92,8 +93,26 @@ export default function SourcingPage() {
     },
     onError: (e) => { setBulkImportRunning(false); toast.error(e.message); },
   });
+  // Kicks off the full Bulk Catalog Optimizer job (the SEO page's queue-based
+  // optimizer, not the lighter inline rewrite the "Auto-Optimize SEO" toggle
+  // does at import time) so "Import & Optimize All" is a genuine single click
+  // instead of import-then-remember-to-go-optimize-separately.
+  const startBulkOptimizeMutation = trpc.seo.startBulkOptimize.useMutation({
+    onSuccess: (d) => {
+      toast.success(`Optimizing ${d.totalProducts} catalog products — track progress on the SEO page.`);
+    },
+    onError: (e) => toast.error(`Import finished, but catalog optimization failed to start: ${e.message}`),
+  });
+  const [importAndOptimizeRunning, setImportAndOptimizeRunning] = useState(false);
   const pushToCjMutation = trpc.sourcing.pushToCjFavorites.useMutation({
     onSuccess: (d) => toast.success(`Added ${d.pushed} products to CJ Favorites`),
+    onError: (e) => toast.error(e.message),
+  });
+  const suggestSpecsMutation = trpc.sourcing.suggestSpecs.useMutation({
+    onSuccess: (d) => {
+      if (d.suggestions.length === 0) toast.warning("No suggestions came back — try again in a moment.");
+      setSpecSuggestions(d.suggestions);
+    },
     onError: (e) => toast.error(e.message),
   });
 
@@ -123,6 +142,28 @@ export default function SourcingPage() {
     if (!selectedSpec) return;
     setBulkImportRunning(true);
     bulkImportMutation.mutate({ specId: selectedSpec, bestPicksOnly, autoOptimize });
+  };
+
+  const handleImportAndOptimizeAll = async () => {
+    if (!selectedSpec) return;
+    setImportAndOptimizeRunning(true);
+    setBulkImportRunning(true);
+    try {
+      // Skip the per-product inline rewrite here — the catalog optimizer
+      // that runs next already rewrites title/description/meta for every
+      // product, so doing both would be a redundant, slower LLM pass.
+      const importResult = await bulkImportMutation.mutateAsync({ specId: selectedSpec, bestPicksOnly, autoOptimize: false });
+      setBulkImportRunning(false);
+      if (importResult.imported > 0) {
+        await startBulkOptimizeMutation.mutateAsync();
+      } else {
+        toast.warning("Nothing was imported, so catalog optimization wasn't started.");
+      }
+    } catch {
+      // Errors are already surfaced via each mutation's onError toast.
+    } finally {
+      setImportAndOptimizeRunning(false);
+    }
   };
 
   const handlePushToCj = (ids?: number[]) => {
@@ -229,11 +270,22 @@ export default function SourcingPage() {
                 <Button
                   size="sm"
                   onClick={handleBulkImport}
-                  disabled={bulkImportMutation.isPending || pendingCount === 0}
+                  disabled={bulkImportMutation.isPending || importAndOptimizeRunning || pendingCount === 0}
                   className="bg-emerald-600 hover:bg-emerald-500"
                 >
                   {bulkImportMutation.isPending ? <RefreshCw className="w-4 h-4 mr-2 animate-spin" /> : <Download className="w-4 h-4 mr-2" />}
                   Bulk Import {pendingCount > 0 ? `(${pendingCount})` : ""}
+                </Button>
+
+                <Button
+                  size="sm"
+                  onClick={handleImportAndOptimizeAll}
+                  disabled={bulkImportMutation.isPending || importAndOptimizeRunning || pendingCount === 0}
+                  title="Imports the selected products, then runs the full Bulk Catalog Optimizer on your whole Shopify catalog"
+                  className="bg-gradient-to-r from-emerald-600 to-violet-600 hover:from-emerald-500 hover:to-violet-500"
+                >
+                  {importAndOptimizeRunning ? <RefreshCw className="w-4 h-4 mr-2 animate-spin" /> : <Sparkles className="w-4 h-4 mr-2" />}
+                  Import & Optimize All {pendingCount > 0 ? `(${pendingCount})` : ""}
                 </Button>
 
                 <Button
@@ -420,6 +472,74 @@ export default function SourcingPage() {
 
         {/* ── Specs Tab ── */}
         <TabsContent value="specs" className="space-y-4 mt-4">
+          <div className="flex items-center justify-between">
+            <p className="text-white/40 text-xs max-w-md">AI reviews your Business Profile (Settings) and current Shopify catalog to suggest new specs that fill a real gap, instead of duplicating what you already sell.</p>
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => suggestSpecsMutation.mutate()}
+              disabled={suggestSpecsMutation.isPending}
+              className="border-violet-500/30 text-violet-300 hover:bg-violet-500/10 flex-shrink-0"
+            >
+              {suggestSpecsMutation.isPending ? <RefreshCw className="w-3.5 h-3.5 mr-1.5 animate-spin" /> : <Sparkles className="w-3.5 h-3.5 mr-1.5" />}
+              Suggest Specs
+            </Button>
+          </div>
+
+          {specSuggestions.length > 0 && (
+            <div className="grid gap-3">
+              {specSuggestions.map((s, i) => (
+                <Card key={i} className="bg-violet-500/5 border-violet-500/20">
+                  <CardContent className="p-4">
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="min-w-0">
+                        <div className="flex items-center gap-2 mb-1">
+                          <Sparkles className="w-3.5 h-3.5 text-violet-400 flex-shrink-0" />
+                          <h3 className="text-white font-medium">{s.name}</h3>
+                        </div>
+                        <div className="flex gap-1.5 flex-wrap mb-2">
+                          {s.keywords.map((kw) => <Badge key={kw} className="bg-white/5 text-white/50 border-white/10 text-[10px]">{kw}</Badge>)}
+                        </div>
+                        <p className="text-white/50 text-xs mb-1">{s.rationale}</p>
+                        <p className="text-white/30 text-xs">
+                          ${s.minPrice}–${s.maxPrice} · {s.categories.join(", ")}
+                        </p>
+                      </div>
+                      <div className="flex gap-2 flex-shrink-0">
+                        <Button
+                          size="sm"
+                          className="bg-violet-600 hover:bg-violet-500 h-8"
+                          disabled={createSpecMutation.isPending}
+                          onClick={() => {
+                            createSpecMutation.mutate({
+                              name: s.name,
+                              keywords: s.keywords,
+                              categories: s.categories,
+                              minPrice: s.minPrice,
+                              maxPrice: s.maxPrice,
+                              sources: ["cj", "dsers", "aliexpress"],
+                            });
+                            setSpecSuggestions((prev) => prev.filter((_, idx) => idx !== i));
+                          }}
+                        >
+                          <Plus className="w-3.5 h-3.5 mr-1" />Create
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          className="border-white/10 text-white/40 hover:text-white h-8"
+                          onClick={() => setSpecSuggestions((prev) => prev.filter((_, idx) => idx !== i))}
+                        >
+                          <XCircle className="w-3.5 h-3.5" />
+                        </Button>
+                      </div>
+                    </div>
+                  </CardContent>
+                </Card>
+              ))}
+            </div>
+          )}
+
           <div className="grid gap-4">
             {specs.map((spec) => (
               <Card key={spec.id} className="bg-white/5 border-white/10">

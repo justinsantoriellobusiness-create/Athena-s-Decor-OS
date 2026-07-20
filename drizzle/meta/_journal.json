@@ -148,6 +148,27 @@
       "when": 1784075034383,
       "tag": "0020_clean_wilson_fisk",
       "breakpoints": true
+    },
+    {
+      "idx": 21,
+      "version": "5",
+      "when": 1784348443937,
+      "tag": "0021_weekly_product_sourcing",
+      "breakpoints": true
+    },
+    {
+      "idx": 22,
+      "version": "5",
+      "when": 1784369442044,
+      "tag": "0022_add_app_settings",
+      "breakpoints": true
+    },
+    {
+      "idx": 23,
+      "version": "5",
+      "when": 1784535252314,
+      "tag": "0023_add_backlink_verified",
+      "breakpoints": true
     }
   ]
 }

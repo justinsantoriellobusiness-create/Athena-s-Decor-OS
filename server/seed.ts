@@ -139,6 +139,18 @@ export async function seedIntegrationsFromEnv() {
           });
         }
         console.log(`[Seed] Shopify connected: ${shopifyDomain} (${productCount} products)`);
+
+        // Self-heal deployments that connected Shopify before the
+        // Accounting revenue account was auto-created — without this,
+        // Accounting silently stays empty forever even though Shopify
+        // itself is fully connected.
+        try {
+          const { ensureShopifyFinancialAccount, syncShopifyOrdersToAccounting } = await import("./db");
+          const accountId = await ensureShopifyFinancialAccount(shopifyDomain);
+          if (accountId) await syncShopifyOrdersToAccounting(accountId);
+        } catch (accErr) {
+          console.warn("[Seed] Shopify connected, but Accounting auto-setup failed:", accErr);
+        }
       }
     } catch (err) {
       console.warn("[Seed] Failed to seed Shopify config:", err);

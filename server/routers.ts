@@ -13,6 +13,7 @@ import { ENV } from "./_core/env";
 import { fetchPayPalTransactions } from "./_core/paypal";
 import { fetchEbayTransactions } from "./_core/ebay";
 import { publishFacebookCampaign, publishTikTokCampaign } from "./_core/adPlatforms";
+import { isFirecrawlConfigured, searchRealBacklinkCandidates } from "./_core/firecrawl";
 import { runFullAudit, applyAllAuditFixes } from "./auditRunner";
 import { runSourcingScrape } from "./sourcingRunner";
 import { optimizeActiveCampaignBudgets } from "./adsRunner";
@@ -109,6 +110,9 @@ import {
   getRecentActivity,
   getInventoryGroupedByProduct,
   logActivity,
+  getAppSettings,
+  upsertAppSettings,
+  getBusinessContextForAI,
 } from "./db";
 import { runInventoryScan, computeStatus } from "./inventoryRunner";
 import { runAutoFulfillment, deriveOrderStatus } from "./fulfillmentRunner";
@@ -170,6 +174,16 @@ const shopifyRouter = router({
           lastSyncAt: new Date(),
           productCount: countData.count,
         });
+        // Auto-create the Accounting revenue account and backfill it so the
+        // Accounting tab has real data immediately, not only after the user
+        // separately discovers Accounting → Accounts → Add Account.
+        try {
+          const { ensureShopifyFinancialAccount, syncShopifyOrdersToAccounting } = await import("./db");
+          const accountId = await ensureShopifyFinancialAccount(input.storeDomain);
+          if (accountId) await syncShopifyOrdersToAccounting(accountId);
+        } catch (accErr) {
+          console.warn("[Shopify] Connected, but Accounting auto-setup failed:", accErr);
+        }
         return { success: true, shopName: shopData.shop.name, productCount: countData.count };
             } catch (err: any) {
         console.error("[Shopify] Connection failed:", err);
@@ -1222,6 +1236,77 @@ const sourcingRouter = router({
       }
       return { success: true, pushed, failed };
     }),
+
+  // ── AI Spec Suggestions ─────────────────────────────────────────────────────
+  // Suggests new specs only — never auto-creates them, so a bad LLM call
+  // can't silently spawn sourcing runs the user didn't ask for.
+  suggestSpecs: protectedProcedure.mutation(async () => {
+    const businessContext = await getBusinessContextForAI();
+    const existingSpecs = await getSourcingSpecs();
+    const existingKeywords = existingSpecs.flatMap((s) => (s.keywords as string[]) || []);
+
+    let catalogSummary = "";
+    try {
+      const config = await getShopifyConfig();
+      if (config?.isConnected) {
+        const client = await getShopifyClient(config.storeDomain, decryptCredential(config.accessToken) ?? config.accessToken);
+        const { products } = await client.getProducts(50);
+        const titles = products.map((p) => p.title).filter(Boolean);
+        if (titles.length) catalogSummary = `Current Shopify catalog sample (${titles.length} of ${config.productCount ?? titles.length} total products): ${titles.slice(0, 40).join(", ")}`;
+      }
+    } catch (err) {
+      console.warn("[Sourcing] Catalog fetch for spec suggestions failed:", err);
+    }
+
+    const prompt = `You are a product sourcing strategist for a home decor dropshipping store.
+${businessContext || "No detailed business profile has been filled in yet (Settings > Profile & Branding) — use general home decor dropshipping best practices."}
+${catalogSummary || "No live Shopify catalog data available."}
+${existingKeywords.length ? `Keywords already covered by existing sourcing specs (avoid near-duplicates of these): ${existingKeywords.join(", ")}` : ""}
+
+Suggest 4 new, DISTINCT product sourcing specs this store should scrape for next. Each must target a clearly different sub-niche or catalog gap relative to what's listed above — not just synonyms of what's already covered. Keep every suggestion genuinely relevant to a home decor dropshipping store.
+
+Return JSON: { "suggestions": [{ "name": string (short, e.g. "Boho Wall Art"), "keywords": string[] (3-6 specific supplier search keywords), "categories": string[] (1-3 broad categories), "minPrice": number, "maxPrice": number, "rationale": string (1-2 sentences on why this fits the business/catalog above) }] }`;
+
+    const response = await invokeLLM({
+      messages: [
+        { role: "system", content: "You are an expert dropshipping product researcher. Return only JSON." },
+        { role: "user", content: prompt },
+      ],
+      response_format: {
+        type: "json_schema",
+        json_schema: {
+          name: "spec_suggestions",
+          strict: true,
+          schema: {
+            type: "object",
+            properties: {
+              suggestions: {
+                type: "array",
+                items: {
+                  type: "object",
+                  properties: {
+                    name: { type: "string" },
+                    keywords: { type: "array", items: { type: "string" } },
+                    categories: { type: "array", items: { type: "string" } },
+                    minPrice: { type: "number" },
+                    maxPrice: { type: "number" },
+                    rationale: { type: "string" },
+                  },
+                  required: ["name", "keywords", "categories", "minPrice", "maxPrice", "rationale"],
+                  additionalProperties: false,
+                },
+              },
+            },
+            required: ["suggestions"],
+            additionalProperties: false,
+          },
+        },
+      },
+    });
+    const raw = response.choices[0]?.message?.content;
+    const parsed = JSON.parse(typeof raw === "string" ? raw : "{}");
+    return { suggestions: (parsed.suggestions || []) as Array<{ name: string; keywords: string[]; categories: string[]; minPrice: number; maxPrice: number; rationale: string }> };
+  }),
 });
 // ─── Inventory Router ─────────────────────────────────────────────────────────
 const inventoryRouter = router({
@@ -2068,36 +2153,9 @@ const accountingRouter = router({
     .mutation(async ({ input }) => {
       const config = await getShopifyConfig();
       if (!config?.isConnected) throw new TRPCError({ code: "BAD_REQUEST", message: "Shopify not connected. Connect your store in Settings first." });
-      const client = await getShopifyClient(config.storeDomain, decryptCredential(config.accessToken) ?? config.accessToken);
-      // Fetch recent orders from Shopify
-      const ordersData = await client.getOrders(250, "any");
-      const orders = ordersData?.orders ?? [];
-      const txns: any[] = [];
-      for (const order of orders) {
-        const orderDate = new Date(order.created_at);
-        const total = parseFloat(order.total_price ?? "0");
-        const shipping = parseFloat(order.total_shipping_price_set?.shop_money?.amount ?? "0");
-        const discount = parseFloat(order.total_discounts ?? "0");
-        const refund = parseFloat(order.total_refunded_set?.shop_money?.amount ?? "0");
-        // Product sales income
-        if (total > 0) {
-          txns.push({ accountId: input.accountId, date: orderDate, description: `Shopify Order #${order.order_number}`, amount: total - shipping, type: "income", category: "product_sales", source: "shopify", taxDeductible: false, externalId: String(order.id), orderId: String(order.order_number), taxCategory: "Schedule C Line 1", isReconciled: false });
-        }
-        // Shipping collected
-        if (shipping > 0) {
-          txns.push({ accountId: input.accountId, date: orderDate, description: `Shopify Shipping #${order.order_number}`, amount: shipping, type: "income", category: "shipping_collected", source: "shopify", taxDeductible: false, externalId: `${order.id}-ship`, orderId: String(order.order_number), isReconciled: false });
-        }
-        // Refunds
-        if (refund > 0) {
-          txns.push({ accountId: input.accountId, date: orderDate, description: `Shopify Refund #${order.order_number}`, amount: -refund, type: "refund", category: "returns_refunds", source: "shopify", taxDeductible: true, taxCategory: "Schedule C Line 2", externalId: `${order.id}-refund`, isReconciled: false });
-        }
-        // Shopify transaction fees (2.9% + 30¢ for Shopify Payments, or 0.5-2% for external)
-        const fee = total * 0.029 + 0.30;
-        txns.push({ accountId: input.accountId, date: orderDate, description: `Shopify Payment Fee #${order.order_number}`, amount: -fee, type: "fee", category: "payment_processing", source: "shopify", taxDeductible: true, taxCategory: "Schedule C Line 10", externalId: `${order.id}-fee`, isReconciled: false });
-      }
-      if (txns.length > 0) await insertTransactions(txns);
-      await updateFinancialAccount(input.accountId, { lastSyncedAt: new Date(), isConnected: true });
-      return { success: true, imported: txns.length, orders: orders.length };
+      const { syncShopifyOrdersToAccounting } = await import("./db");
+      const { imported, orders } = await syncShopifyOrdersToAccounting(input.accountId);
+      return { success: true, imported, orders };
     }),
 
   syncPayPal: protectedProcedure
@@ -2659,85 +2717,165 @@ const backlinkerRouter = router({
       const campaign = await getBacklinkCampaign(input.campaignId);
       if (!campaign || campaign.userId !== ctx.user.id) throw new TRPCError({ code: "NOT_FOUND" });
 
-      const prompt = `You are an SEO backlink strategist for an e-commerce home decor store.
-Target URL: ${campaign.targetUrl}
+      const niche = campaign.niche || "home decor";
+      const businessContext = await getBusinessContextForAI();
+      const sharedContext = `Target URL: ${campaign.targetUrl}
 Anchor text: ${campaign.anchorText || "natural"}
 Keywords: ${campaign.keywords || "home decor, interior design, furniture"}
-Niche: ${campaign.niche || "home decor"}
+Niche: ${niche}
 Store products: ${input.productTypes || "furniture, art, decor accessories"}
 Emotional angles: ${input.emotionalAngles || "cozy home, personal style, transformation"}
+${businessContext}`;
 
-Generate ${input.count} high-quality backlink opportunities. For each, provide:
-1. A realistic website/blog/news site name and URL (use real types of sites that exist in this niche)
-2. A specific page URL on that site where a backlink would fit naturally
-3. The type: news, blog, forum, directory, social, or competitor
-4. Estimated domain authority (1-100)
-5. Relevance score (1-100) 
-6. SEO value: high, medium, or low
-7. Contact email if applicable
-8. A personalized outreach message (2-3 sentences) explaining why linking to the store benefits their readers
+      let items: any[] = [];
+      let realSearchUsed = false;
 
-Focus on: interior design blogs, home improvement news sites, lifestyle magazines, decor forums, Pinterest boards, home staging directories, real estate blogs, and emotional storytelling platforms.
+      // Prefer real, live-searched sites over LLM invention when Firecrawl
+      // is configured — a fabricated site name/URL is useless for actual
+      // outreach no matter how plausible it sounds.
+      if (isFirecrawlConfigured()) {
+        const candidates = await searchRealBacklinkCandidates(niche, input.count);
+        if (candidates.length > 0) {
+          const prompt = `You are an SEO backlink strategist for an e-commerce home decor store.
+${sharedContext}
 
-Return as JSON array with fields: siteName, siteUrl, pageUrl, pageTitle, type, domainAuthority, relevanceScore, seoValue, outreachEmail, outreachMessage`;
+Below are REAL websites found via live web search. For EACH one (same order, do not skip or reorder), assess its fit for a backlink and write a personalized outreach pitch. Do NOT invent additional sites — only use the ones listed. If a site is clearly irrelevant or spammy, still include it but give it a low relevanceScore.
 
-      const response = await invokeLLM({
-        messages: [{ role: "user", content: prompt }],
-        response_format: { type: "json_schema", json_schema: {
-          name: "backlink_opportunities",
-          strict: true,
-          schema: {
-            type: "object",
-            properties: {
-              opportunities: {
-                type: "array",
-                items: {
-                  type: "object",
-                  properties: {
-                    siteName: { type: "string" },
-                    siteUrl: { type: "string" },
-                    pageUrl: { type: "string" },
-                    pageTitle: { type: "string" },
-                    type: { type: "string" },
-                    domainAuthority: { type: "number" },
-                    relevanceScore: { type: "number" },
-                    seoValue: { type: "string" },
-                    outreachEmail: { type: "string" },
-                    outreachMessage: { type: "string" },
-                  },
-                  required: ["siteName","siteUrl","pageUrl","pageTitle","type","domainAuthority","relevanceScore","seoValue","outreachEmail","outreachMessage"],
-                  additionalProperties: false,
-                }
+Real sites found:
+${candidates.map((c, i) => `${i + 1}. ${c.title} — ${c.url}${c.description ? ` — ${c.description}` : ""}`).join("\n")}
+
+Return JSON with exactly ${candidates.length} items in the same order, fields: pageTitle, type (news/blog/forum/directory/social/competitor), domainAuthority (1-100 estimate), relevanceScore (1-100), seoValue (high/medium/low), outreachEmail (empty string if unknown — never guess an address), outreachMessage (2-3 sentences).`;
+
+          const response = await invokeLLM({
+            messages: [{ role: "user", content: prompt }],
+            response_format: { type: "json_schema", json_schema: {
+              name: "backlink_assessments",
+              strict: true,
+              schema: {
+                type: "object",
+                properties: {
+                  opportunities: {
+                    type: "array",
+                    items: {
+                      type: "object",
+                      properties: {
+                        pageTitle: { type: "string" },
+                        type: { type: "string" },
+                        domainAuthority: { type: "number" },
+                        relevanceScore: { type: "number" },
+                        seoValue: { type: "string" },
+                        outreachEmail: { type: "string" },
+                        outreachMessage: { type: "string" },
+                      },
+                      required: ["pageTitle", "type", "domainAuthority", "relevanceScore", "seoValue", "outreachEmail", "outreachMessage"],
+                      additionalProperties: false,
+                    }
+                  }
+                },
+                required: ["opportunities"],
+                additionalProperties: false,
               }
-            },
-            required: ["opportunities"],
-            additionalProperties: false,
-          }
-        }}
-      });
+            }}
+          });
+          const content = response.choices[0].message.content;
+          const parsed = JSON.parse(typeof content === "string" ? content : JSON.stringify(content));
+          const assessments = (parsed.opportunities || []) as any[];
 
-      const content = response.choices[0].message.content;
-      const parsed = JSON.parse(typeof content === "string" ? content : JSON.stringify(content));
-      // These are AI-generated candidate targets, not a verified web crawl —
-      // never populate outreachEmail with a fabricated address (the site
-      // names/URLs are plausible-sounding but unverified too). Verify each
-      // site and find a real contact before actually reaching out.
-      const items = (parsed.opportunities || []).map((o: any) => ({
-        campaignId: input.campaignId,
-        userId: ctx.user.id,
-        siteName: o.siteName,
-        siteUrl: o.siteUrl,
-        pageUrl: o.pageUrl,
-        pageTitle: o.pageTitle,
-        type: o.type as any,
-        domainAuthority: o.domainAuthority,
-        relevanceScore: o.relevanceScore,
-        seoValue: o.seoValue as any,
-        outreachEmail: null,
-        outreachMessage: o.outreachMessage,
-        notes: "AI-suggested target, not a verified site — confirm it's real and find an actual contact before reaching out.",
-        status: "new" as const,
-      }));
+          items = candidates.map((c, i) => {
+            const a = assessments[i] || {};
+            return {
+              campaignId: input.campaignId,
+              userId: ctx.user.id,
+              siteName: c.title,
+              siteUrl: c.url,
+              pageUrl: c.url,
+              pageTitle: a.pageTitle || c.title,
+              type: (a.type as any) || "blog",
+              domainAuthority: typeof a.domainAuthority === "number" ? a.domainAuthority : 0,
+              relevanceScore: typeof a.relevanceScore === "number" ? a.relevanceScore : 50,
+              seoValue: (a.seoValue as any) || "medium",
+              isVerified: true,
+              outreachEmail: a.outreachEmail || null,
+              outreachMessage: a.outreachMessage || "",
+              notes: "Found via live web search — this is a real, reachable site. Still verify a real contact/editor email before outreach.",
+              status: "new" as const,
+            };
+          });
+          realSearchUsed = true;
+        }
+      }
+
+      // Fallback: no Firecrawl configured, or the live search returned
+      // nothing usable — LLM-invented candidates, clearly disclosed as such.
+      if (items.length === 0) {
+        const prompt = `You are an SEO backlink strategist for an e-commerce home decor store.
+${sharedContext}
+
+Generate ${input.count} plausible backlink opportunities. For each, provide a realistic website/blog/news site name and URL (of a real TYPE of site that exists in this niche — you have no live web access, so these are unverified candidates, not confirmed real sites), a specific page URL where a backlink would fit naturally, the type (news/blog/forum/directory/social/competitor), estimated domain authority (1-100), relevance score (1-100), SEO value (high/medium/low), contact email if applicable (leave empty if unsure), and a personalized outreach message (2-3 sentences).
+
+Focus on: interior design blogs, home improvement news sites, lifestyle magazines, decor forums, home staging directories, real estate blogs, and emotional storytelling platforms.
+
+Return JSON: { "opportunities": [...] } with fields: siteName, siteUrl, pageUrl, pageTitle, type, domainAuthority, relevanceScore, seoValue, outreachEmail, outreachMessage`;
+
+        const response = await invokeLLM({
+          messages: [{ role: "user", content: prompt }],
+          response_format: { type: "json_schema", json_schema: {
+            name: "backlink_opportunities",
+            strict: true,
+            schema: {
+              type: "object",
+              properties: {
+                opportunities: {
+                  type: "array",
+                  items: {
+                    type: "object",
+                    properties: {
+                      siteName: { type: "string" },
+                      siteUrl: { type: "string" },
+                      pageUrl: { type: "string" },
+                      pageTitle: { type: "string" },
+                      type: { type: "string" },
+                      domainAuthority: { type: "number" },
+                      relevanceScore: { type: "number" },
+                      seoValue: { type: "string" },
+                      outreachEmail: { type: "string" },
+                      outreachMessage: { type: "string" },
+                    },
+                    required: ["siteName","siteUrl","pageUrl","pageTitle","type","domainAuthority","relevanceScore","seoValue","outreachEmail","outreachMessage"],
+                    additionalProperties: false,
+                  }
+                }
+              },
+              required: ["opportunities"],
+              additionalProperties: false,
+            }
+          }}
+        });
+
+        const content = response.choices[0].message.content;
+        const parsed = JSON.parse(typeof content === "string" ? content : JSON.stringify(content));
+        // These are AI-generated candidate targets, not a verified web crawl —
+        // never populate outreachEmail with a fabricated address (the site
+        // names/URLs are plausible-sounding but unverified too). Verify each
+        // site and find a real contact before actually reaching out.
+        items = (parsed.opportunities || []).map((o: any) => ({
+          campaignId: input.campaignId,
+          userId: ctx.user.id,
+          siteName: o.siteName,
+          siteUrl: o.siteUrl,
+          pageUrl: o.pageUrl,
+          pageTitle: o.pageTitle,
+          type: o.type as any,
+          domainAuthority: o.domainAuthority,
+          relevanceScore: o.relevanceScore,
+          seoValue: o.seoValue as any,
+          isVerified: false,
+          outreachEmail: null,
+          outreachMessage: o.outreachMessage,
+          notes: "AI-suggested target, not a verified site — confirm it's real and find an actual contact before reaching out.",
+          status: "new" as const,
+        }));
+      }
 
       await insertBacklinkOpportunities(items);
       await updateBacklinkCampaign(input.campaignId, {
@@ -2745,7 +2883,7 @@ Return as JSON array with fields: siteName, siteUrl, pageUrl, pageTitle, type, d
         lastRunAt: new Date(),
       });
 
-      return { discovered: items.length, opportunities: items };
+      return { discovered: items.length, opportunities: items, realSearchUsed };
     }),
 
   // Mark an opportunity as outreach sent / linked / rejected
@@ -2829,25 +2967,101 @@ Return JSON with: title, metaTitle, metaDescription, content (full HTML), sugges
     }))
     .mutation(async ({ ctx, input }) => {
       const typeFilter = input.types?.length ? input.types.join(", ") : "news, blog, forum, directory, social";
+      const businessContext = await getBusinessContextForAI();
+
+      if (isFirecrawlConfigured()) {
+        const candidates = await searchRealBacklinkCandidates(input.niche, input.count);
+        if (candidates.length > 0) {
+          const prompt = `You are a world-class SEO strategist for a "${input.niche}" e-commerce store.
+Store URL: ${input.storeUrl || "(not provided)"}
+Target keywords: ${input.keywords || "home decor, interior design, furniture, lifestyle"}
+Site types to include: ${typeFilter}
+${businessContext}
+
+Below are REAL websites found via live web search (same order, do not skip or reorder). For EACH one, assess its fit for a backlink. Do NOT invent additional sites.
+
+Real sites found:
+${candidates.map((c, i) => `${i + 1}. ${c.title} — ${c.url}${c.description ? ` — ${c.description}` : ""}`).join("\n")}
+
+Return JSON with exactly ${candidates.length} items in the same order, field "sites" with: pageTitle, type (news/blog/forum/directory/social/competitor), domainAuthority (1-100 estimate), relevanceScore (1-100), seoValue (high/medium/low), whyBest (1 sentence), outreachMessage (2-3 sentence personalized pitch).`;
+          const response = await invokeLLM({
+            messages: [{ role: "user", content: prompt }],
+            response_format: { type: "json_schema", json_schema: {
+              name: "best_sites_assessments",
+              strict: true,
+              schema: {
+                type: "object",
+                properties: {
+                  sites: {
+                    type: "array",
+                    items: {
+                      type: "object",
+                      properties: {
+                        pageTitle: { type: "string" },
+                        type: { type: "string" },
+                        domainAuthority: { type: "number" },
+                        relevanceScore: { type: "number" },
+                        seoValue: { type: "string" },
+                        whyBest: { type: "string" },
+                        outreachMessage: { type: "string" },
+                      },
+                      required: ["pageTitle","type","domainAuthority","relevanceScore","seoValue","whyBest","outreachMessage"],
+                      additionalProperties: false,
+                    }
+                  }
+                },
+                required: ["sites"],
+                additionalProperties: false,
+              }
+            }}
+          });
+          const raw = response.choices[0].message.content;
+          const parsed = JSON.parse(typeof raw === "string" ? raw : JSON.stringify(raw));
+          const assessments = (parsed.sites || []) as any[];
+          const sites = candidates.map((c, i) => {
+            const a = assessments[i] || {};
+            return {
+              siteName: c.title,
+              siteUrl: c.url,
+              pageUrl: c.url,
+              pageTitle: a.pageTitle || c.title,
+              type: a.type || "blog",
+              domainAuthority: typeof a.domainAuthority === "number" ? a.domainAuthority : 0,
+              relevanceScore: typeof a.relevanceScore === "number" ? a.relevanceScore : 50,
+              seoValue: a.seoValue || "medium",
+              outreachEmail: null,
+              outreachMessage: a.outreachMessage || "",
+              whyBest: a.whyBest || "Found via live web search for this niche.",
+              verified: true,
+            };
+          });
+          return { sites, total: sites.length, realSearchUsed: true };
+        }
+      }
+
+      // Fallback when Firecrawl isn't configured (set FIRECRAWL_API_KEY in
+      // Railway Variables to get real, verified results) or search found
+      // nothing usable.
       const prompt = `You are a world-class SEO strategist. Identify the ${input.count} BEST websites to get backlinks from for a "${input.niche}" e-commerce store.
 Store URL: ${input.storeUrl || "(not provided)"}
 Target keywords: ${input.keywords || "home decor, interior design, furniture, lifestyle"}
 Site types to include: ${typeFilter}
+${businessContext}
 
-For each site, provide:
-- siteName: the real name of the website
+You have no live web access, so these are plausible unverified candidates, not confirmed real sites. For each site, provide:
+- siteName: a realistic name of a website of the type described
 - siteUrl: the root domain URL
 - pageUrl: the most relevant specific page or section URL to target
 - pageTitle: the title of that page
 - type: one of news/blog/forum/directory/social/competitor
-- domainAuthority: estimated DA score 1-100 (be realistic — major sites like Houzz=85, Apartment Therapy=78, etc.)
+- domainAuthority: estimated DA score 1-100
 - relevanceScore: how relevant to this niche 1-100
 - seoValue: "high", "medium", or "low"
 - outreachEmail: likely contact/editor email if known, else empty string
 - outreachMessage: a 2-3 sentence personalized pitch explaining why linking to this store benefits their readers
 - whyBest: 1 sentence explaining why this site is ideal for backlinks in this niche
 
-Prioritize: interior design publications, home improvement blogs, lifestyle magazines, real estate blogs, DIY communities, home staging directories, decor Pinterest boards, Houzz, Apartment Therapy, Elle Decor, Better Homes & Gardens, HGTV blog, Architectural Digest, design forums, and local home decor communities.
+Prioritize: interior design publications, home improvement blogs, lifestyle magazines, real estate blogs, DIY communities, home staging directories, decor Pinterest boards, design forums, and local home decor communities.
 Return as JSON with field "sites" containing the array.`;
       const response = await invokeLLM({
         messages: [{ role: "user", content: prompt }],
@@ -2886,10 +3100,10 @@ Return as JSON with field "sites" containing the array.`;
       });
       const raw = response.choices[0].message.content;
       const parsed = JSON.parse(typeof raw === "string" ? raw : JSON.stringify(raw));
-      // Site names may be real, but the AI can't know an actual current
+      // Site names may be plausible, but the AI can't know an actual current
       // contact email — never show a fabricated one as if it were verified.
       const sites = (parsed.sites || []).map((s: any) => ({ ...s, outreachEmail: null, verified: false }));
-      return { sites, total: sites.length };
+      return { sites, total: sites.length, realSearchUsed: false };
     }),
 });
 // ─── Email Campaigns Router ───────────────────────────────────────────────────
@@ -3792,6 +4006,77 @@ const activityRouter = router({
     .query(async ({ input }) => getRecentActivity({ limit: input?.limit, module: input?.module })),
 });
 
+// ─── Settings Router (branding + business profile) ────────────────────────────
+const LOGO_EXT_BY_MIME: Record<string, string> = {
+  "image/png": "png",
+  "image/jpeg": "jpg",
+  "image/webp": "webp",
+  "image/svg+xml": "svg",
+};
+
+const settingsRouter = router({
+  get: protectedProcedure.query(async () => {
+    const settings = await getAppSettings();
+    return {
+      appName: settings?.appName || null,
+      logoUrl: settings?.logoUrl || null,
+      themeId: settings?.themeId || "violet",
+      businessName: settings?.businessName || "",
+      niche: settings?.niche || "",
+      targetAudience: settings?.targetAudience || "",
+      brandVoice: settings?.brandVoice || "",
+      priceTier: settings?.priceTier || null,
+      keyCategories: settings?.keyCategories || "",
+      competitors: settings?.competitors || "",
+      uniqueValue: settings?.uniqueValue || "",
+      website: settings?.website || "",
+      additionalNotes: settings?.additionalNotes || "",
+    };
+  }),
+
+  update: protectedProcedure
+    .input(z.object({
+      appName: z.string().max(120).optional(),
+      themeId: z.string().max(32).optional(),
+      businessName: z.string().max(255).optional(),
+      niche: z.string().max(255).optional(),
+      targetAudience: z.string().max(2000).optional(),
+      brandVoice: z.string().max(2000).optional(),
+      priceTier: z.enum(["budget", "mid_range", "premium", "luxury"]).optional(),
+      keyCategories: z.string().max(2000).optional(),
+      competitors: z.string().max(2000).optional(),
+      uniqueValue: z.string().max(2000).optional(),
+      website: z.string().max(255).optional(),
+      additionalNotes: z.string().max(4000).optional(),
+    }))
+    .mutation(async ({ input }) => {
+      await upsertAppSettings(input);
+      return { success: true };
+    }),
+
+  uploadLogo: protectedProcedure
+    .input(z.object({ dataUrl: z.string().min(1) }))
+    .mutation(async ({ input }) => {
+      const match = input.dataUrl.match(/^data:(image\/(?:png|jpeg|webp|svg\+xml));base64,(.+)$/);
+      if (!match) throw new TRPCError({ code: "BAD_REQUEST", message: "Logo must be a PNG, JPEG, WebP, or SVG image." });
+      const [, mime, base64] = match;
+      const buf = Buffer.from(base64, "base64");
+      if (buf.length > 2 * 1024 * 1024) throw new TRPCError({ code: "BAD_REQUEST", message: "Logo must be under 2MB." });
+      try {
+        const { url } = await storagePut(`branding/logo-${Date.now()}.${LOGO_EXT_BY_MIME[mime]}`, buf, mime);
+        await upsertAppSettings({ logoUrl: url });
+        return { success: true, url };
+      } catch (err: any) {
+        throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: err.message || "Logo upload failed. File storage may not be configured on this deployment." });
+      }
+    }),
+
+  removeLogo: protectedProcedure.mutation(async () => {
+    await upsertAppSettings({ logoUrl: null });
+    return { success: true };
+  }),
+});
+
 // ─── App Router ───────────────────────────────────────────────────────────────
 export const appRouter = router({
   system: systemRouter,
@@ -3814,6 +4099,7 @@ export const appRouter = router({
   backlinker: backlinkerRouter,
   emailCampaigns: emailCampaignsRouter,
   autonomous: autonomousRouter,
+  settings: settingsRouter,
 });
 
 export type AppRouter = typeof appRouter;

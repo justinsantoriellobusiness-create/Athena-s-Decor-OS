@@ -291,13 +291,25 @@ export default function BacklinkerPage() {
                   <div className="flex items-center justify-between">
                     <h4 className="font-medium text-sm">{bestSites.length} sites discovered</h4>
                   </div>
+                  {discoverBestSites.data && !(discoverBestSites.data as any).realSearchUsed && (
+                    <div className="text-xs text-amber-600 bg-amber-500/10 border border-amber-500/20 rounded-lg px-3 py-2">
+                      These are AI-generated candidates, not confirmed real sites — set <code className="font-mono">FIRECRAWL_API_KEY</code> in Railway Variables to get live-searched, verified sites instead.
+                    </div>
+                  )}
                   {bestSites.map((site: any, i: number) => (
                     <Card key={i} className="overflow-hidden">
                       <div className="flex items-center justify-between p-4">
                         <div className="flex items-center gap-3 flex-1 min-w-0">
                           <Globe className="h-4 w-4 text-muted-foreground shrink-0" />
                           <div className="min-w-0">
-                            <div className="font-medium text-sm truncate">{site.siteName}</div>
+                            <div className="font-medium text-sm truncate flex items-center gap-1.5">
+                              {site.siteName}
+                              {site.verified ? (
+                                <Badge className="bg-emerald-500/10 text-emerald-600 border-emerald-500/20 text-[10px]" title="Found via live web search — a real, reachable site">✓ Real site</Badge>
+                              ) : (
+                                <Badge variant="outline" className="text-muted-foreground text-[10px]" title="AI-generated candidate, not confirmed real — verify before outreach">AI idea</Badge>
+                              )}
+                            </div>
                             <div className="text-xs text-muted-foreground truncate">{site.pageTitle}</div>
                           </div>
                         </div>
@@ -399,7 +411,14 @@ export default function BacklinkerPage() {
                         <div className="flex items-center gap-3 flex-1 min-w-0">
                           <Globe className="h-4 w-4 text-muted-foreground shrink-0" />
                           <div className="min-w-0">
-                            <div className="font-medium text-sm truncate">{opp.siteName}</div>
+                            <div className="font-medium text-sm truncate flex items-center gap-1.5">
+                              {opp.siteName}
+                              {(opp as any).isVerified ? (
+                                <Badge className="bg-emerald-500/10 text-emerald-600 border-emerald-500/20 text-[10px]" title="Found via live web search — a real, reachable site">✓ Real site</Badge>
+                              ) : (
+                                <Badge variant="outline" className="text-muted-foreground text-[10px]" title="AI-generated candidate, not confirmed real — verify before outreach">AI idea</Badge>
+                              )}
+                            </div>
                             <div className="text-xs text-muted-foreground truncate">{opp.pageTitle}</div>
                           </div>
                         </div>
