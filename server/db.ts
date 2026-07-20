@@ -397,6 +397,17 @@ export async function getInventorySnapshotByVariant(shopifyVariantId: string): P
 }
 
 /**
+ * Bulk variant->snapshot lookup (one query instead of N) — used to attach
+ * product images to Shopify order line items on the Fulfillment page
+ * without an extra Shopify API call per order.
+ */
+export async function getInventorySnapshotsByVariantIds(shopifyVariantIds: string[]): Promise<InventorySnapshot[]> {
+  const db = await getDb();
+  if (!db || shopifyVariantIds.length === 0) return [];
+  return db.select().from(inventorySnapshots).where(inArray(inventorySnapshots.shopifyVariantId, shopifyVariantIds));
+}
+
+/**
  * Sync a product's Shopify visibility (active/draft) onto all its snapshot
  * rows — called right after hide/republish/auto-draft so the Inventory UI
  * shows the real current state without waiting for the next full scan.

@@ -10,6 +10,44 @@ repo `justinsantoriellobusiness-create/Athena-s-Decor-OS`, branch `main`.
 Stack: Express + tRPC + Drizzle ORM (MySQL) backend, React + Vite frontend,
 Anthropic Claude for all LLM calls.
 
+## Round 6 — Fulfillment visibility overhaul (branch `claude/cj-shopify-api-connection-9ncdl0`)
+Round 5 (below) is merged and live. This round responds to: "I want
+fulfillment better, I want to see images of the orders, I want more access
+to the automation process to ensure everything is working properly and
+orders are placed correctly, and I want to see how much I'm spending."
+- **Order line-item images** — `fulfillment.getOrders` now joins each
+  order's line items against `inventory_snapshots` (by variant ID, one bulk
+  query) to attach product images; the Fulfillment page shows stacked
+  thumbnails on each collapsed row and a full image+title+qty+price list
+  when expanded. Shopify's REST Orders API doesn't include images on line
+  items directly, so this reuses the already-cached inventory-scan data
+  instead of an extra per-order Shopify call. Products never scanned by
+  Inventory won't have an image yet — falls back to a placeholder icon, not
+  a broken image.
+- **Spend visibility** — three new stat cards (spent this month, last 30
+  days, avg cost/order) computed from the real CJ `product_cost`
+  transactions the fulfillment engine already records per order
+  (`fulfillment.getSpendSummary`), plus each order row now shows its own
+  estimated CJ cost inline. This was previously only visible by digging
+  through Accounting's transaction ledger.
+- **Live CJ order status on demand** — expanding an order with a CJ order
+  ID shows a "Check live CJ status" button (`fulfillment.getCjOrderDetail`)
+  that calls CJ's real API fresh, not a cached guess — genuine proof an
+  order was placed correctly and where it actually is.
+- **Shopify's own tracking surfaced** — once an order ships, the tracking
+  number/carrier/link Shopify already has (from `order.fulfillments`) now
+  shows in the expanded row instead of only being visible in Shopify Admin.
+- **Embedded Activity Feed panel** — a "Show Activity" toggle pulls the
+  last 20 `module=fulfillment` activity-log entries (errors, low-balance
+  alerts, shipped notifications) directly onto this page, so you don't have
+  to jump to the separate Activity Feed to see what actually happened
+  during runs.
+- Verification: `npx tsc --noEmit` (0 errors), `npm run build` (succeeds),
+  `npx vitest run` (same 2 pre-existing unrelated Zapier failures as every
+  prior round). Not live-clicked against a real Shopify store — this
+  sandbox has no `DATABASE_URL`/Shopify credentials to run the dev server
+  against; verify visually in the deployed app after merge.
+
 ## Round 5 — Accounting-empty bug fix + new features (branch `claude/cj-shopify-api-connection-9ncdl0`)
 - **Accounting tab was permanently empty for every store** — connecting
   Shopify (app-wide, `shopifyConfig`) never created a row in
