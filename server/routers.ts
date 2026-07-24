@@ -1268,45 +1268,56 @@ Suggest 4 new, DISTINCT product sourcing specs this store should scrape for next
 
 Return JSON: { "suggestions": [{ "name": string (short, e.g. "Boho Wall Art"), "keywords": string[] (3-6 specific supplier search keywords), "categories": string[] (1-3 broad categories), "minPrice": number, "maxPrice": number, "rationale": string (1-2 sentences on why this fits the business/catalog above) }] }`;
 
-    const response = await invokeLLM({
-      messages: [
-        { role: "system", content: "You are an expert dropshipping product researcher. Return only JSON." },
-        { role: "user", content: prompt },
-      ],
-      response_format: {
-        type: "json_schema",
-        json_schema: {
-          name: "spec_suggestions",
-          strict: true,
-          schema: {
-            type: "object",
-            properties: {
-              suggestions: {
-                type: "array",
-                items: {
-                  type: "object",
-                  properties: {
-                    name: { type: "string" },
-                    keywords: { type: "array", items: { type: "string" } },
-                    categories: { type: "array", items: { type: "string" } },
-                    minPrice: { type: "number" },
-                    maxPrice: { type: "number" },
-                    rationale: { type: "string" },
+    try {
+      const response = await invokeLLM({
+        messages: [
+          { role: "system", content: "You are an expert dropshipping product researcher. Return only JSON." },
+          { role: "user", content: prompt },
+        ],
+        response_format: {
+          type: "json_schema",
+          json_schema: {
+            name: "spec_suggestions",
+            strict: true,
+            schema: {
+              type: "object",
+              properties: {
+                suggestions: {
+                  type: "array",
+                  items: {
+                    type: "object",
+                    properties: {
+                      name: { type: "string" },
+                      keywords: { type: "array", items: { type: "string" } },
+                      categories: { type: "array", items: { type: "string" } },
+                      minPrice: { type: "number" },
+                      maxPrice: { type: "number" },
+                      rationale: { type: "string" },
+                    },
+                    required: ["name", "keywords", "categories", "minPrice", "maxPrice", "rationale"],
+                    additionalProperties: false,
                   },
-                  required: ["name", "keywords", "categories", "minPrice", "maxPrice", "rationale"],
-                  additionalProperties: false,
                 },
               },
+              required: ["suggestions"],
+              additionalProperties: false,
             },
-            required: ["suggestions"],
-            additionalProperties: false,
           },
         },
-      },
-    });
-    const raw = response.choices[0]?.message?.content;
-    const parsed = JSON.parse(typeof raw === "string" ? raw : "{}");
-    return { suggestions: (parsed.suggestions || []) as Array<{ name: string; keywords: string[]; categories: string[]; minPrice: number; maxPrice: number; rationale: string }> };
+      });
+      const raw = response.choices[0]?.message?.content;
+      const parsed = JSON.parse(typeof raw === "string" ? raw : "{}");
+      return { suggestions: (parsed.suggestions || []) as Array<{ name: string; keywords: string[]; categories: string[]; minPrice: number; maxPrice: number; rationale: string }> };
+    } catch (err: any) {
+      console.error("[Sourcing] Spec suggestion failed:", err);
+      const message = String(err?.message ?? "");
+      throw new TRPCError({
+        code: "INTERNAL_SERVER_ERROR",
+        message: message.includes("credit balance")
+          ? "Anthropic API credit balance is too low — add credits at console.anthropic.com to use AI suggestions."
+          : message || "Spec suggestion failed. Please try again.",
+      });
+    }
   }),
 });
 // ─── Inventory Router ─────────────────────────────────────────────────────────
@@ -2813,40 +2824,52 @@ ${candidates.map((c, i) => `${i + 1}. ${c.title} — ${c.url}${c.description ? `
 
 Return JSON with exactly ${candidates.length} items in the same order, fields: pageTitle, type (news/blog/forum/directory/social/competitor), domainAuthority (1-100 estimate), relevanceScore (1-100), seoValue (high/medium/low), outreachEmail (empty string if unknown — never guess an address), outreachMessage (2-3 sentences).`;
 
-          const response = await invokeLLM({
-            messages: [{ role: "user", content: prompt }],
-            response_format: { type: "json_schema", json_schema: {
-              name: "backlink_assessments",
-              strict: true,
-              schema: {
-                type: "object",
-                properties: {
-                  opportunities: {
-                    type: "array",
-                    items: {
-                      type: "object",
-                      properties: {
-                        pageTitle: { type: "string" },
-                        type: { type: "string" },
-                        domainAuthority: { type: "number" },
-                        relevanceScore: { type: "number" },
-                        seoValue: { type: "string" },
-                        outreachEmail: { type: "string" },
-                        outreachMessage: { type: "string" },
-                      },
-                      required: ["pageTitle", "type", "domainAuthority", "relevanceScore", "seoValue", "outreachEmail", "outreachMessage"],
-                      additionalProperties: false,
+          let assessments: any[] = [];
+          try {
+            const response = await invokeLLM({
+              messages: [{ role: "user", content: prompt }],
+              response_format: { type: "json_schema", json_schema: {
+                name: "backlink_assessments",
+                strict: true,
+                schema: {
+                  type: "object",
+                  properties: {
+                    opportunities: {
+                      type: "array",
+                      items: {
+                        type: "object",
+                        properties: {
+                          pageTitle: { type: "string" },
+                          type: { type: "string" },
+                          domainAuthority: { type: "number" },
+                          relevanceScore: { type: "number" },
+                          seoValue: { type: "string" },
+                          outreachEmail: { type: "string" },
+                          outreachMessage: { type: "string" },
+                        },
+                        required: ["pageTitle", "type", "domainAuthority", "relevanceScore", "seoValue", "outreachEmail", "outreachMessage"],
+                        additionalProperties: false,
+                      }
                     }
-                  }
-                },
-                required: ["opportunities"],
-                additionalProperties: false,
-              }
-            }}
-          });
-          const content = response.choices[0].message.content;
-          const parsed = JSON.parse(typeof content === "string" ? content : JSON.stringify(content));
-          const assessments = (parsed.opportunities || []) as any[];
+                  },
+                  required: ["opportunities"],
+                  additionalProperties: false,
+                }
+              }}
+            });
+            const content = response.choices[0].message.content;
+            const parsed = JSON.parse(typeof content === "string" ? content : JSON.stringify(content));
+            assessments = (parsed.opportunities || []) as any[];
+          } catch (err: any) {
+            console.error("[Backlinker] Real-site assessment failed:", err);
+            const message = String(err?.message ?? "");
+            throw new TRPCError({
+              code: "INTERNAL_SERVER_ERROR",
+              message: message.includes("credit balance")
+                ? "Anthropic API credit balance is too low — add credits at console.anthropic.com to use AI backlink discovery."
+                : message || "Backlink discovery failed. Please try again.",
+            });
+          }
 
           items = candidates.map((c, i) => {
             const a = assessments[i] || {};
@@ -2884,43 +2907,54 @@ Focus on: interior design blogs, home improvement news sites, lifestyle magazine
 
 Return JSON: { "opportunities": [...] } with fields: siteName, siteUrl, pageUrl, pageTitle, type, domainAuthority, relevanceScore, seoValue, outreachEmail, outreachMessage`;
 
-        const response = await invokeLLM({
-          messages: [{ role: "user", content: prompt }],
-          response_format: { type: "json_schema", json_schema: {
-            name: "backlink_opportunities",
-            strict: true,
-            schema: {
-              type: "object",
-              properties: {
-                opportunities: {
-                  type: "array",
-                  items: {
-                    type: "object",
-                    properties: {
-                      siteName: { type: "string" },
-                      siteUrl: { type: "string" },
-                      pageUrl: { type: "string" },
-                      pageTitle: { type: "string" },
-                      type: { type: "string" },
-                      domainAuthority: { type: "number" },
-                      relevanceScore: { type: "number" },
-                      seoValue: { type: "string" },
-                      outreachEmail: { type: "string" },
-                      outreachMessage: { type: "string" },
-                    },
-                    required: ["siteName","siteUrl","pageUrl","pageTitle","type","domainAuthority","relevanceScore","seoValue","outreachEmail","outreachMessage"],
-                    additionalProperties: false,
+        let parsed: any;
+        try {
+          const response = await invokeLLM({
+            messages: [{ role: "user", content: prompt }],
+            response_format: { type: "json_schema", json_schema: {
+              name: "backlink_opportunities",
+              strict: true,
+              schema: {
+                type: "object",
+                properties: {
+                  opportunities: {
+                    type: "array",
+                    items: {
+                      type: "object",
+                      properties: {
+                        siteName: { type: "string" },
+                        siteUrl: { type: "string" },
+                        pageUrl: { type: "string" },
+                        pageTitle: { type: "string" },
+                        type: { type: "string" },
+                        domainAuthority: { type: "number" },
+                        relevanceScore: { type: "number" },
+                        seoValue: { type: "string" },
+                        outreachEmail: { type: "string" },
+                        outreachMessage: { type: "string" },
+                      },
+                      required: ["siteName","siteUrl","pageUrl","pageTitle","type","domainAuthority","relevanceScore","seoValue","outreachEmail","outreachMessage"],
+                      additionalProperties: false,
+                    }
                   }
-                }
-              },
-              required: ["opportunities"],
-              additionalProperties: false,
-            }
-          }}
-        });
-
-        const content = response.choices[0].message.content;
-        const parsed = JSON.parse(typeof content === "string" ? content : JSON.stringify(content));
+                },
+                required: ["opportunities"],
+                additionalProperties: false,
+              }
+            }}
+          });
+          const content = response.choices[0].message.content;
+          parsed = JSON.parse(typeof content === "string" ? content : JSON.stringify(content));
+        } catch (err: any) {
+          console.error("[Backlinker] Discover opportunities failed:", err);
+          const message = String(err?.message ?? "");
+          throw new TRPCError({
+            code: "INTERNAL_SERVER_ERROR",
+            message: message.includes("credit balance")
+              ? "Anthropic API credit balance is too low — add credits at console.anthropic.com to use AI backlink discovery."
+              : message || "Backlink discovery failed. Please try again.",
+          });
+        }
         // These are AI-generated candidate targets, not a verified web crawl —
         // never populate outreachEmail with a fabricated address (the site
         // names/URLs are plausible-sounding but unverified too). Verify each
@@ -3051,40 +3085,52 @@ Real sites found:
 ${candidates.map((c, i) => `${i + 1}. ${c.title} — ${c.url}${c.description ? ` — ${c.description}` : ""}`).join("\n")}
 
 Return JSON with exactly ${candidates.length} items in the same order, field "sites" with: pageTitle, type (news/blog/forum/directory/social/competitor), domainAuthority (1-100 estimate), relevanceScore (1-100), seoValue (high/medium/low), whyBest (1 sentence), outreachMessage (2-3 sentence personalized pitch).`;
-          const response = await invokeLLM({
-            messages: [{ role: "user", content: prompt }],
-            response_format: { type: "json_schema", json_schema: {
-              name: "best_sites_assessments",
-              strict: true,
-              schema: {
-                type: "object",
-                properties: {
-                  sites: {
-                    type: "array",
-                    items: {
-                      type: "object",
-                      properties: {
-                        pageTitle: { type: "string" },
-                        type: { type: "string" },
-                        domainAuthority: { type: "number" },
-                        relevanceScore: { type: "number" },
-                        seoValue: { type: "string" },
-                        whyBest: { type: "string" },
-                        outreachMessage: { type: "string" },
-                      },
-                      required: ["pageTitle","type","domainAuthority","relevanceScore","seoValue","whyBest","outreachMessage"],
-                      additionalProperties: false,
+          let assessments: any[] = [];
+          try {
+            const response = await invokeLLM({
+              messages: [{ role: "user", content: prompt }],
+              response_format: { type: "json_schema", json_schema: {
+                name: "best_sites_assessments",
+                strict: true,
+                schema: {
+                  type: "object",
+                  properties: {
+                    sites: {
+                      type: "array",
+                      items: {
+                        type: "object",
+                        properties: {
+                          pageTitle: { type: "string" },
+                          type: { type: "string" },
+                          domainAuthority: { type: "number" },
+                          relevanceScore: { type: "number" },
+                          seoValue: { type: "string" },
+                          whyBest: { type: "string" },
+                          outreachMessage: { type: "string" },
+                        },
+                        required: ["pageTitle","type","domainAuthority","relevanceScore","seoValue","whyBest","outreachMessage"],
+                        additionalProperties: false,
+                      }
                     }
-                  }
-                },
-                required: ["sites"],
-                additionalProperties: false,
-              }
-            }}
-          });
-          const raw = response.choices[0].message.content;
-          const parsed = JSON.parse(typeof raw === "string" ? raw : JSON.stringify(raw));
-          const assessments = (parsed.sites || []) as any[];
+                  },
+                  required: ["sites"],
+                  additionalProperties: false,
+                }
+              }}
+            });
+            const raw = response.choices[0].message.content;
+            const parsed = JSON.parse(typeof raw === "string" ? raw : JSON.stringify(raw));
+            assessments = (parsed.sites || []) as any[];
+          } catch (err: any) {
+            console.error("[Backlinker] Best-site assessment failed:", err);
+            const message = String(err?.message ?? "");
+            throw new TRPCError({
+              code: "INTERNAL_SERVER_ERROR",
+              message: message.includes("credit balance")
+                ? "Anthropic API credit balance is too low — add credits at console.anthropic.com to use AI Best-Site Discovery."
+                : message || "Best-site discovery failed. Please try again.",
+            });
+          }
           const sites = candidates.map((c, i) => {
             const a = assessments[i] || {};
             return {
@@ -3130,43 +3176,55 @@ You have no live web access, so these are plausible unverified candidates, not c
 
 Prioritize: interior design publications, home improvement blogs, lifestyle magazines, real estate blogs, DIY communities, home staging directories, decor Pinterest boards, design forums, and local home decor communities.
 Return as JSON with field "sites" containing the array.`;
-      const response = await invokeLLM({
-        messages: [{ role: "user", content: prompt }],
-        response_format: { type: "json_schema", json_schema: {
-          name: "best_sites",
-          strict: true,
-          schema: {
-            type: "object",
-            properties: {
-              sites: {
-                type: "array",
-                items: {
-                  type: "object",
-                  properties: {
-                    siteName: { type: "string" },
-                    siteUrl: { type: "string" },
-                    pageUrl: { type: "string" },
-                    pageTitle: { type: "string" },
-                    type: { type: "string" },
-                    domainAuthority: { type: "number" },
-                    relevanceScore: { type: "number" },
-                    seoValue: { type: "string" },
-                    outreachEmail: { type: "string" },
-                    outreachMessage: { type: "string" },
-                    whyBest: { type: "string" },
-                  },
-                  required: ["siteName","siteUrl","pageUrl","pageTitle","type","domainAuthority","relevanceScore","seoValue","outreachEmail","outreachMessage","whyBest"],
-                  additionalProperties: false,
+      let parsed: any;
+      try {
+        const response = await invokeLLM({
+          messages: [{ role: "user", content: prompt }],
+          response_format: { type: "json_schema", json_schema: {
+            name: "best_sites",
+            strict: true,
+            schema: {
+              type: "object",
+              properties: {
+                sites: {
+                  type: "array",
+                  items: {
+                    type: "object",
+                    properties: {
+                      siteName: { type: "string" },
+                      siteUrl: { type: "string" },
+                      pageUrl: { type: "string" },
+                      pageTitle: { type: "string" },
+                      type: { type: "string" },
+                      domainAuthority: { type: "number" },
+                      relevanceScore: { type: "number" },
+                      seoValue: { type: "string" },
+                      outreachEmail: { type: "string" },
+                      outreachMessage: { type: "string" },
+                      whyBest: { type: "string" },
+                    },
+                    required: ["siteName","siteUrl","pageUrl","pageTitle","type","domainAuthority","relevanceScore","seoValue","outreachEmail","outreachMessage","whyBest"],
+                    additionalProperties: false,
+                  }
                 }
-              }
-            },
-            required: ["sites"],
-            additionalProperties: false,
-          }
-        }}
-      });
-      const raw = response.choices[0].message.content;
-      const parsed = JSON.parse(typeof raw === "string" ? raw : JSON.stringify(raw));
+              },
+              required: ["sites"],
+              additionalProperties: false,
+            }
+          }}
+        });
+        const raw = response.choices[0].message.content;
+        parsed = JSON.parse(typeof raw === "string" ? raw : JSON.stringify(raw));
+      } catch (err: any) {
+        console.error("[Backlinker] Best-site discovery failed:", err);
+        const message = String(err?.message ?? "");
+        throw new TRPCError({
+          code: "INTERNAL_SERVER_ERROR",
+          message: message.includes("credit balance")
+            ? "Anthropic API credit balance is too low — add credits at console.anthropic.com to use AI Best-Site Discovery."
+            : message || "Best-site discovery failed. Please try again.",
+        });
+      }
       // Site names may be plausible, but the AI can't know an actual current
       // contact email — never show a fabricated one as if it were verified.
       const sites = (parsed.sites || []).map((s: any) => ({ ...s, outreachEmail: null, verified: false }));
