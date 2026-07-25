@@ -10,6 +10,40 @@ repo `justinsantoriellobusiness-create/Athena-s-Decor-OS`, branch `main`.
 Stack: Express + tRPC + Drizzle ORM (MySQL) backend, React + Vite frontend,
 Anthropic Claude for all LLM calls.
 
+## Round 8 — Real website/email prospect scraper (replaces Dataminer.io idea)
+User asked about setting up Dataminer.io to power the Email Scraper "for
+real." Researched their actual API surface before building anything:
+**Dataminer.io has no public REST API** — it's a Chrome/Edge browser
+extension (confirmed by the user's own installed copy) that exports to
+Google Sheets/Excel/CSV, with no webhook or endpoint a backend server can
+call. A browser extension can't be driven server-side from this app at all.
+Pivoted to Firecrawl (already integrated this session for Backlinker, has a
+genuine API):
+
+- **New real scraper** (`emailCampaigns.scrapeRealProspects`, Email
+  Campaigns → Scraper tab, new "Real Website Scraper" card above the
+  existing AI one): searches live for real business/site URLs in a given
+  niche via `searchRealWebsiteCandidates()`, then scrapes each real page
+  with Firecrawl's structured extraction for a **publicly-listed contact
+  email actually visible on the page** — never fabricated; a site with no
+  visible contact email is simply skipped. New `emailProspects.source =
+  "web_research"` marks these as real, distinct from the pre-existing
+  `competitor_scrape` AI-invented personas (migration `0024`).
+- **Compliance note surfaced in the UI and Activity Feed, not hidden**:
+  these are real contacts found via public scraping, not opt-in
+  subscribers. The owner explicitly asked for this and accepted
+  responsibility for using them carefully, but the app still flags
+  CAN-SPAM/GDPR review before sending on every scrape result, same spirit
+  as the existing Shopify-customer-consent gating.
+- Requires `FIRECRAWL_API_KEY` in Railway Variables (same key already
+  needed for real Backlinker search) — the mutation fails with a clear
+  message if it's missing rather than silently falling back to fake data.
+- The old AI Persona Ideas generator is untouched and still available,
+  now clearly labeled "AI-invented, not real" for contrast.
+- Verified: `npx tsc --noEmit` (0 errors), `npm run build` (succeeds),
+  `npx vitest run` (same 2 pre-existing unrelated Zapier failures). Not
+  live-tested against a real Firecrawl account from this sandbox.
+
 ## Round 7 — Out-of-stock detection was structurally broken; fixed at the root
 User reported "I think it has a problem reading the out of stock products"
 and called the sourcing→import→auto-hide flow the core purpose of the app.

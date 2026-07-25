@@ -68,6 +68,7 @@ export default function EmailCampaignsPage() {
     method: "review_sites" as const,
     count: 25,
   });
+  const [realScrapeForm, setRealScrapeForm] = useState({ niche: "", count: 15 });
 
   const { data: analytics, refetch: refetchAnalytics } = trpc.emailCampaigns.getAnalytics.useQuery(undefined, {
     // Poll while a campaign is actively sending so progress updates live
@@ -112,6 +113,19 @@ export default function EmailCampaignsPage() {
   const scrapeProspects = trpc.emailCampaigns.scrapeProspects.useMutation({
     onSuccess: (data) => {
       toast.success(`Generated ${data.prospectsFound} AI prospect ideas modeled on ${scrapeForm.competitorDomain}'s likely customers`);
+      refetchProspects();
+      refetchScrapJobs();
+    },
+    onError: (err) => toast.error(err.message),
+  });
+
+  const scrapeRealProspects = trpc.emailCampaigns.scrapeRealProspects.useMutation({
+    onSuccess: (data) => {
+      toast.success(
+        data.prospectsFound > 0
+          ? `Found ${data.prospectsFound} real contact(s) from ${data.sitesScanned} site(s) scanned`
+          : `Scanned ${data.sitesScanned} real site(s) but none had a publicly listed contact email`
+      );
       refetchProspects();
       refetchScrapJobs();
     },
@@ -501,7 +515,73 @@ export default function EmailCampaignsPage() {
             <CardHeader>
               <CardTitle className="flex items-center gap-2 text-base">
                 <Search className="h-4 w-4" />
+                Real Website Scraper
+                <Badge className="bg-emerald-500/10 text-emerald-600 border-emerald-500/20 text-[10px]">Real, live-searched</Badge>
+              </CardTitle>
+              <CardDescription>
+                Finds real, live business/site URLs for a niche via web search, then scrapes each one for a publicly-listed contact email — only what's actually shown on the page, never invented.
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-600 dark:text-amber-400 flex items-start gap-2">
+                <AlertCircle className="h-3.5 w-3.5 mt-0.5 shrink-0" />
+                <span>These are real contacts found via public web scraping, not opt-in subscribers. Review each one before sending, and make sure your outreach complies with CAN-SPAM/GDPR and any other rules that apply to you — scraped-but-unconfirmed addresses can also trigger higher bounce/spam-complaint rates.</span>
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                <div className="space-y-2 md:col-span-2">
+                  <Label>Niche / Site Type</Label>
+                  <Input
+                    placeholder="boutique home decor stores"
+                    value={realScrapeForm.niche}
+                    onChange={e => setRealScrapeForm(f => ({ ...f, niche: e.target.value }))}
+                  />
+                </div>
+                <div className="space-y-2">
+                  <Label>Sites to Scan</Label>
+                  <Select
+                    value={String(realScrapeForm.count)}
+                    onValueChange={v => setRealScrapeForm(f => ({ ...f, count: parseInt(v) }))}
+                  >
+                    <SelectTrigger>
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="10">10 sites</SelectItem>
+                      <SelectItem value="15">15 sites</SelectItem>
+                      <SelectItem value="30">30 sites</SelectItem>
+                      <SelectItem value="50">50 sites</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+              </div>
+
+              <Button
+                className="w-full"
+                onClick={() => {
+                  if (!realScrapeForm.niche) {
+                    toast.error("Please enter a niche or site type");
+                    return;
+                  }
+                  scrapeRealProspects.mutate(realScrapeForm);
+                }}
+                disabled={scrapeRealProspects.isPending || !realScrapeForm.niche}
+              >
+                {scrapeRealProspects.isPending ? (
+                  <><RefreshCw className="h-4 w-4 mr-2 animate-spin" />Scanning real sites...</>
+                ) : (
+                  <><Zap className="h-4 w-4 mr-2" />Scan {realScrapeForm.count} Real Sites</>
+                )}
+              </Button>
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2 text-base">
+                <Search className="h-4 w-4" />
                 AI Prospect Ideas
+                <Badge variant="outline" className="text-muted-foreground text-[10px]">AI-invented, not real</Badge>
               </CardTitle>
               <CardDescription>
                 AI generates example customer personas based on who's likely to buy from a competitor — for targeting research and inspiration, not real people.

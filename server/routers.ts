@@ -13,7 +13,7 @@ import { ENV } from "./_core/env";
 import { fetchPayPalTransactions } from "./_core/paypal";
 import { fetchEbayTransactions } from "./_core/ebay";
 import { publishFacebookCampaign, publishTikTokCampaign } from "./_core/adPlatforms";
-import { isFirecrawlConfigured, searchRealBacklinkCandidates } from "./_core/firecrawl";
+import { isFirecrawlConfigured, searchRealBacklinkCandidates, searchRealWebsiteCandidates, firecrawlScrapeContactInfo } from "./_core/firecrawl";
 import { runFullAudit, applyAllAuditFixes } from "./auditRunner";
 import { runSourcingScrape } from "./sourcingRunner";
 import { optimizeActiveCampaignBudgets } from "./adsRunner";
@@ -3657,6 +3657,74 @@ Return as JSON array.`;
       });
 
       return { jobId: job.id, prospectsFound: added, total: items.length };
+    }),
+
+  // ── Real website/contact scraper (Firecrawl) ───────────────────────────────
+  // Unlike scrapeProspects above (AI-invented personas, never real people),
+  // this finds real live business/site URLs for a niche via Firecrawl search,
+  // then scrapes each one for a real, publicly-listed contact email — only
+  // ever what's actually shown on the page, never fabricated. A page with no
+  // visible contact email is simply skipped, not guessed at.
+  scrapeRealProspects: protectedProcedure
+    .input(z.object({
+      niche: z.string().min(2),
+      count: z.number().int().min(5).max(50).default(15),
+    }))
+    .mutation(async ({ ctx, input }) => {
+      if (!isFirecrawlConfigured()) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: "FIRECRAWL_API_KEY isn't configured — add it in Railway Variables to enable real website/contact scraping." });
+      }
+      const job = await createProspectScrapJob({
+        userId: ctx.user.id,
+        competitorDomain: input.niche,
+        method: "website_scrape",
+        status: "running",
+        startedAt: new Date(),
+        errorMessage: null,
+        completedAt: null,
+      });
+      try {
+        const candidates = await searchRealWebsiteCandidates(input.niche, input.count);
+        const rows: any[] = [];
+        let scanned = 0;
+        for (const c of candidates) {
+          try {
+            const info = await firecrawlScrapeContactInfo(c.url);
+            scanned++;
+            if (info?.email) {
+              rows.push({
+                userId: ctx.user.id,
+                email: info.email,
+                firstName: null,
+                lastName: null,
+                company: info.businessName || c.title,
+                website: c.url,
+                source: "web_research" as const,
+                sourceDetail: input.niche,
+                tags: input.niche,
+                status: "active" as const,
+                score: 60,
+                lastContactedAt: null,
+              });
+            }
+          } catch (err) {
+            console.warn(`[EmailScraper] Contact scrape failed for ${c.url}:`, err);
+          }
+          await sleep(300);
+        }
+        const added = rows.length > 0 ? await insertEmailProspects(rows) : 0;
+        await updateProspectScrapJob(job.id, { status: "completed", prospectsFound: added, completedAt: new Date() });
+        await logActivity({
+          module: "email_scraper", level: "success",
+          title: `Found ${added} real contact(s) from ${scanned} site(s) scanned`,
+          detail: `Real websites found via live search for "${input.niche}" — only sites with an actual publicly-listed contact email were added. These are real leads, not AI-invented personas, but were not opt-in — review before sending and follow applicable email marketing laws (CAN-SPAM/GDPR) for your jurisdiction.`,
+        });
+        return { success: true, prospectsFound: added, sitesScanned: scanned, candidatesFound: candidates.length };
+      } catch (err: any) {
+        await updateProspectScrapJob(job.id, { status: "failed", errorMessage: err.message, completedAt: new Date() });
+        console.error("[EmailScraper] Real prospect scrape failed:", err);
+        throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: err.message || "Real prospect scraping failed. Please try again." });
+      }
     }),
 
   getScrapJobs: protectedProcedure.query(async ({ ctx }) => {
