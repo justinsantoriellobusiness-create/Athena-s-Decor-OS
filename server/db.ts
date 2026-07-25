@@ -1258,7 +1258,16 @@ export async function insertEmailProspects(items: Omit<EmailProspect, "id" | "ad
   const db = await getDb(); if (!db) return 0;
   const existing = await db.select({ email: emailProspects.email }).from(emailProspects).where(eq(emailProspects.userId, items[0].userId));
   const existingEmails = new Set(existing.map((r: { email: string }) => r.email));
-  const newItems = items.filter(i => !existingEmails.has(i.email));
+  // Dedupe against the incoming batch too, not just what's already stored —
+  // two scraped sites can legitimately list the same contact address (shared
+  // parent company, agency inbox), and there's no unique constraint to catch
+  // it, so the row would silently insert twice and the person would be
+  // emailed twice.
+  const newItems = items.filter(i => {
+    if (existingEmails.has(i.email)) return false;
+    existingEmails.add(i.email);
+    return true;
+  });
   if (newItems.length === 0) return 0;
   await db.insert(emailProspects).values(newItems as any[]);
   return newItems.length;
