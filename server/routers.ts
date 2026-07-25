@@ -117,7 +117,7 @@ import {
 } from "./db";
 import { runInventoryScan, computeStatus } from "./inventoryRunner";
 import { runAutoFulfillment, deriveOrderStatus } from "./fulfillmentRunner";
-import { getCjAccessToken, getCjBalance, getCjOrderStatus } from "./_core/cjDropshipping";
+import { getCjAccessToken, getCjBalance, getCjOrderStatus, getCjProductVariants, getCjVariantStock } from "./_core/cjDropshipping";
 import { getShopifyClient } from "./shopify";
 import { getConnectedShopifyClient } from "./shopifyHelper";
 import { decryptCredential } from "./crypto";
@@ -875,6 +875,49 @@ const blogRouter = router({
     }),
 });
 
+/**
+ * For a CJ-sourced product about to be imported into Shopify, resolves a
+ * REAL CJ variant SKU + its current live stock.
+ *
+ * This matters because the inventory scanner later matches Shopify's
+ * variant.sku against CJ's variantSku to check real supplier stock. Without
+ * this, every import set the Shopify variant's "sku" to the CJ *product* ID
+ * (sourcedProducts.externalId) — a completely different value from CJ's
+ * per-variant SKU — so that match always failed and silently fell back to
+ * whichever variant CJ happened to list first. Harmless for single-variant
+ * products, wrong for any multi-variant one (different color/size can have
+ * completely different stock).
+ *
+ * Also returns the variant's real current stock so the Shopify product
+ * isn't created with a fake placeholder count — starting every import at a
+ * hardcoded quantity meant Shopify's own inventory number never reflected
+ * reality until someone happened to run a scan or manually corrected it.
+ *
+ * Returns null on any failure (CJ not connected, API error, no variants) so
+ * a transient issue never blocks the import — callers fall back to the
+ * previous externalId-as-sku behavior.
+ */
+async function resolveCjImportVariant(product: { source: string; isVerified: boolean | null; externalId: string | null }): Promise<{ sku: string; stock: number | null } | null> {
+  if (product.source !== "cj" || !product.isVerified || !product.externalId) return null;
+  try {
+    const cjCred = await getSourcingAppCredential("cj");
+    const rawApiKey = cjCred?.apiKey ? decryptCredentials({ apiKey: cjCred.apiKey }).apiKey : null;
+    const cjEmail = cjCred?.apiSecret ?? null;
+    if (!rawApiKey || !cjEmail) return null;
+    const cjToken = await getCjAccessToken(cjEmail, rawApiKey);
+    if (!cjToken) return null;
+    const variants = await getCjProductVariants(cjToken, product.externalId);
+    const variant = variants[0];
+    if (!variant?.vid) return null;
+    await sleep(300);
+    const stock = await getCjVariantStock(cjToken, variant.vid);
+    return { sku: variant.variantSku || product.externalId, stock };
+  } catch (err) {
+    console.warn("[Sourcing] Failed to resolve real CJ variant for import — falling back to product ID as SKU:", err);
+    return null;
+  }
+}
+
 // ─── Sourcing Router ──────────────────────────────────────────────────────────
 const sourcingRouter = router({
   // ── Specs ──────────────────────────────────────────────────────────────────
@@ -974,13 +1017,19 @@ const sourcingRouter = router({
         }
 
         const client = await getShopifyClient(config.storeDomain, decryptCredential(config.accessToken) ?? config.accessToken);
+        const cjVariant = await resolveCjImportVariant(product);
         const shopifyProduct = await client.createProduct({
           title,
           body_html: description,
           tags: `dropshipping, ${product.source}, ${product.category}`,
           metafields_global_title_tag: metaTitle,
           metafields_global_description_tag: metaDescription,
-          variants: [{ id: "", title: "Default Title", price: String(product.price), sku: product.externalId || "", inventory_quantity: 100 }],
+          variants: [{
+            id: "", title: "Default Title", price: String(product.price),
+            sku: cjVariant?.sku || product.externalId || "",
+            inventory_quantity: cjVariant?.stock ?? 100,
+            inventory_management: "shopify",
+          }],
           images: product.imageUrl ? [{ src: product.imageUrl }] : [],
           status: "draft",
         } as any);
@@ -1052,12 +1101,18 @@ const sourcingRouter = router({
             } catch (e) { console.warn("[BulkAutoOptimize] LLM failed for product:", product.id, e); }
           }
 
+          const cjVariant = await resolveCjImportVariant(product);
           const shopifyProduct = await client.createProduct({
             title, body_html: description,
             tags: `dropshipping, ${product.source}, ${product.category}`,
             metafields_global_title_tag: metaTitle,
             metafields_global_description_tag: metaDescription,
-            variants: [{ id: "", title: "Default Title", price: String(product.price), sku: product.externalId || "", inventory_quantity: 100 }],
+            variants: [{
+              id: "", title: "Default Title", price: String(product.price),
+              sku: cjVariant?.sku || product.externalId || "",
+              inventory_quantity: cjVariant?.stock ?? 100,
+              inventory_management: "shopify",
+            }],
             images: product.imageUrl ? [{ src: product.imageUrl }] : [],
             status: "draft",
           } as any);

@@ -10,6 +10,64 @@ repo `justinsantoriellobusiness-create/Athena-s-Decor-OS`, branch `main`.
 Stack: Express + tRPC + Drizzle ORM (MySQL) backend, React + Vite frontend,
 Anthropic Claude for all LLM calls.
 
+## Round 7 — Out-of-stock detection was structurally broken; fixed at the root
+User reported "I think it has a problem reading the out of stock products"
+and called the sourcing→import→auto-hide flow the core purpose of the app.
+A full-production log audit (all 184 real requests over the deployment's
+first 4 days) found the one real bug in Round 5/6's new code (see below,
+now fixed), but digging into the actual out-of-stock mechanism turned up a
+much bigger, pre-existing structural problem:
+
+- **Root cause**: `sourcing.importProduct`/`bulkImport` created every
+  imported Shopify product with `sku: product.externalId` — CJ's
+  **product**-level ID — and a hardcoded `inventory_quantity: 100`, with no
+  `inventory_management` set. `inventoryRunner.ts`'s live CJ stock check
+  matches on `variant.sku === cjVariant.variantSku` (a **variant**-level
+  code, a completely different value/format). That match could never
+  succeed, so every scan silently fell back to whichever variant CJ
+  happened to list first — harmless for single-variant products, **wrong
+  for any multi-variant product** (different color/size can have totally
+  different real stock). Combined with Shopify's own stock count being
+  frozen at the fake `100` forever (nothing ever wrote to it), out-of-stock
+  detection was riding entirely on this broken, coincidental fallback.
+- **Fix — import time** (`resolveCjImportVariant()` in routers.ts, used by
+  both `importProduct` and `bulkImport`): resolves the real CJ variant SKU
+  and its actual current stock before creating the Shopify product, sets
+  `inventory_management: "shopify"` so Shopify tracks it at all, and seeds
+  the real stock number instead of a fake `100`. Falls back to the old
+  behavior on any CJ error so an import never hard-fails because of this.
+- **Fix — every scan** (`inventoryRunner.ts`): now actively writes the real
+  CJ stock into Shopify's own inventory count via `setInventoryLevel()`
+  (only when it actually changed, to stay light on API calls) — Shopify's
+  number is a live, accurate mirror now, not a one-time snapshot from
+  import.
+- **New: auto-republish on restock**. Previously nothing ever un-hid a
+  product once auto-drafted — it stayed hidden forever until a human
+  clicked Republish, which isn't "no work" for a scraper that's supposed to
+  keep the catalog current on its own. Every scan now auto-republishes a
+  product if it's currently healthy (no variant out of stock) **and** is
+  still in Shopify draft status **and** this app's own last snapshot is
+  what recorded it out-of-stock — never touches a product a merchant
+  drafted manually for an unrelated reason (discontinued, pricing error).
+  Always reversible with the existing manual Hide control.
+- Inventory page's "how this works" banner and post-scan summary updated to
+  reflect stock-syncing and auto-republish; Activity Feed entries now
+  include both.
+- **Also fixed in this round**: `sourcing.suggestSpecs`,
+  `backlinker.discoverOpportunities`, and `backlinker.discoverBestSites`
+  (all added in Round 6) crashed with a raw, unhandled 500 instead of a
+  clean message when hitting the Anthropic credit-balance issue — found via
+  the same production log audit. All now catch and return an actionable
+  error, matching the try/catch convention used everywhere else in
+  `routers.ts`.
+- Verified: `npx tsc --noEmit` (0 errors), `npm run build` (succeeds),
+  `npx vitest run` (same 2 pre-existing unrelated Zapier failures). Not
+  live-clicked against a real store from this sandbox (no DB/Shopify
+  credentials here) — please run Scan Now after this deploys and confirm a
+  known out-of-stock CJ product actually gets hidden with the right stock
+  number, and that a restocked one comes back automatically on the next
+  scan.
+
 ## Round 6 — Fulfillment visibility overhaul (branch `claude/cj-shopify-api-connection-9ncdl0`)
 Round 5 (below) is merged and live. This round responds to: "I want
 fulfillment better, I want to see images of the orders, I want more access

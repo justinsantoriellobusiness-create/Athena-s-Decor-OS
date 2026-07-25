@@ -107,7 +107,8 @@ export default function InventoryPage() {
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [lastScan, setLastScan] = useState<{
     scanned: number; outOfStockCount: number; supplierOutOfStockCount: number;
-    cjChecked: number; cjUnavailable: number; draftFailures: number; at: Date;
+    cjChecked: number; cjUnavailable: number; draftFailures: number;
+    stockSynced: number; republishedCount: number; at: Date;
   } | null>(null);
   const utils = trpc.useUtils();
 
@@ -119,13 +120,15 @@ export default function InventoryPage() {
       setLastScan({
         scanned: data.scanned, outOfStockCount: data.outOfStockCount,
         supplierOutOfStockCount: data.supplierOutOfStockCount, cjChecked: data.cjChecked,
-        cjUnavailable: data.cjUnavailable, draftFailures: data.draftFailures, at: new Date(),
+        cjUnavailable: data.cjUnavailable, draftFailures: data.draftFailures,
+        stockSynced: data.stockSynced, republishedCount: data.republishedCount, at: new Date(),
       });
       toast.success(
         data.supplierOutOfStockCount > 0
           ? `Scanned ${data.scanned} — ${data.outOfStockCount} out of stock (${data.supplierOutOfStockCount} caught by real CJ supplier stock)`
           : `Scanned ${data.scanned} products — ${data.outOfStockCount} out of stock`
       );
+      if (data.republishedCount > 0) toast.success(`${data.republishedCount} restocked product(s) automatically republished`);
       if (data.draftFailures > 0) toast.error(`${data.draftFailures} out-of-stock product(s) failed to auto-hide — check Activity Feed`);
       utils.inventory.getGrouped.invalidate();
       utils.scheduler.getAll.invalidate();
@@ -217,10 +220,12 @@ export default function InventoryPage() {
       <div className="bg-emerald-500/5 border border-emerald-500/10 rounded-lg px-4 py-3 text-xs text-white/50">
         <strong className="text-white/70">How automatic out-of-stock works:</strong> every scan — either{" "}
         <strong className="text-white/70">Scan Now</strong> above, or the <strong className="text-white/70">Auto-Sync</strong>{" "}
-        schedule if it's on — checks each product's real Shopify stock (and real CJ supplier stock, for CJ-sourced
-        products) and automatically hides (drafts) anything that's actually out of stock, so it can't be purchased.
-        Nothing extra to set up — it already runs on every scan. You can also hide/republish a whole product, or set
-        an exact stock quantity per variant yourself at any time, below.
+        schedule if it's on — checks each product's real Shopify stock and real CJ supplier stock (for verified
+        CJ-sourced products), writes the real supplier count into Shopify's own inventory, and automatically hides
+        (drafts) anything that's actually out of stock so it can't be purchased — then automatically republishes it
+        once restocked, as long as this app was the one that hid it. Nothing extra to set up — it already runs on
+        every scan. You can also hide/republish a whole product, or set an exact stock quantity per variant yourself
+        at any time, below.
       </div>
 
       {/* Scan-in-progress proof bar */}
@@ -251,6 +256,10 @@ export default function InventoryPage() {
               {lastScan.supplierOutOfStockCount > 0 && (
                 <span className="text-red-400"> {lastScan.supplierOutOfStockCount} product(s) hidden because the real supplier was out even though Shopify still showed available.</span>
               )}
+              {lastScan.republishedCount > 0 && (
+                <span className="text-emerald-400"> {lastScan.republishedCount} restocked product(s) automatically republished.</span>
+              )}
+              {lastScan.stockSynced > 0 && ` Real supplier stock synced into Shopify's own count for ${lastScan.stockSynced} variant(s).`}
               {lastScan.draftFailures > 0 && <span className="text-red-400"> {lastScan.draftFailures} product(s) failed to auto-hide — check manually.</span>}
             </p>
           </div>
