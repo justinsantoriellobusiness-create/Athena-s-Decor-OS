@@ -10,6 +10,98 @@ repo `justinsantoriellobusiness-create/Athena-s-Decor-OS`, branch `main`.
 Stack: Express + tRPC + Drizzle ORM (MySQL) backend, React + Vite frontend,
 Anthropic Claude for all LLM calls.
 
+## Round 8 — Real website/email prospect scraper (replaces Dataminer.io idea)
+User asked about setting up Dataminer.io to power the Email Scraper "for
+real." Researched their actual API surface before building anything:
+**Dataminer.io has no public REST API** — it's a Chrome/Edge browser
+extension (confirmed by the user's own installed copy) that exports to
+Google Sheets/Excel/CSV, with no webhook or endpoint a backend server can
+call. A browser extension can't be driven server-side from this app at all.
+Pivoted to Firecrawl (already integrated this session for Backlinker, has a
+genuine API):
+
+- **New real scraper** (`emailCampaigns.scrapeRealProspects`, Email
+  Campaigns → Scraper tab, new "Real Website Scraper" card above the
+  existing AI one): searches live for real business/site URLs in a given
+  niche via `searchRealWebsiteCandidates()`, then scrapes each real page
+  with Firecrawl's structured extraction for a **publicly-listed contact
+  email actually visible on the page** — never fabricated; a site with no
+  visible contact email is simply skipped. New `emailProspects.source =
+  "web_research"` marks these as real, distinct from the pre-existing
+  `competitor_scrape` AI-invented personas (migration `0024`).
+- **Compliance note surfaced in the UI and Activity Feed, not hidden**:
+  these are real contacts found via public scraping, not opt-in
+  subscribers. The owner explicitly asked for this and accepted
+  responsibility for using them carefully, but the app still flags
+  CAN-SPAM/GDPR review before sending on every scrape result, same spirit
+  as the existing Shopify-customer-consent gating.
+- Requires `FIRECRAWL_API_KEY` in Railway Variables (same key already
+  needed for real Backlinker search) — the mutation fails with a clear
+  message if it's missing rather than silently falling back to fake data.
+- The old AI Persona Ideas generator is untouched and still available,
+  now clearly labeled "AI-invented, not real" for contrast.
+- Verified: `npx tsc --noEmit` (0 errors), `npm run build` (succeeds),
+  `npx vitest run` (same 2 pre-existing unrelated Zapier failures). Not
+  live-tested against a real Firecrawl account from this sandbox.
+
+## Round 7 — Out-of-stock detection was structurally broken; fixed at the root
+User reported "I think it has a problem reading the out of stock products"
+and called the sourcing→import→auto-hide flow the core purpose of the app.
+A full-production log audit (all 184 real requests over the deployment's
+first 4 days) found the one real bug in Round 5/6's new code (see below,
+now fixed), but digging into the actual out-of-stock mechanism turned up a
+much bigger, pre-existing structural problem:
+
+- **Root cause**: `sourcing.importProduct`/`bulkImport` created every
+  imported Shopify product with `sku: product.externalId` — CJ's
+  **product**-level ID — and a hardcoded `inventory_quantity: 100`, with no
+  `inventory_management` set. `inventoryRunner.ts`'s live CJ stock check
+  matches on `variant.sku === cjVariant.variantSku` (a **variant**-level
+  code, a completely different value/format). That match could never
+  succeed, so every scan silently fell back to whichever variant CJ
+  happened to list first — harmless for single-variant products, **wrong
+  for any multi-variant product** (different color/size can have totally
+  different real stock). Combined with Shopify's own stock count being
+  frozen at the fake `100` forever (nothing ever wrote to it), out-of-stock
+  detection was riding entirely on this broken, coincidental fallback.
+- **Fix — import time** (`resolveCjImportVariant()` in routers.ts, used by
+  both `importProduct` and `bulkImport`): resolves the real CJ variant SKU
+  and its actual current stock before creating the Shopify product, sets
+  `inventory_management: "shopify"` so Shopify tracks it at all, and seeds
+  the real stock number instead of a fake `100`. Falls back to the old
+  behavior on any CJ error so an import never hard-fails because of this.
+- **Fix — every scan** (`inventoryRunner.ts`): now actively writes the real
+  CJ stock into Shopify's own inventory count via `setInventoryLevel()`
+  (only when it actually changed, to stay light on API calls) — Shopify's
+  number is a live, accurate mirror now, not a one-time snapshot from
+  import.
+- **New: auto-republish on restock**. Previously nothing ever un-hid a
+  product once auto-drafted — it stayed hidden forever until a human
+  clicked Republish, which isn't "no work" for a scraper that's supposed to
+  keep the catalog current on its own. Every scan now auto-republishes a
+  product if it's currently healthy (no variant out of stock) **and** is
+  still in Shopify draft status **and** this app's own last snapshot is
+  what recorded it out-of-stock — never touches a product a merchant
+  drafted manually for an unrelated reason (discontinued, pricing error).
+  Always reversible with the existing manual Hide control.
+- Inventory page's "how this works" banner and post-scan summary updated to
+  reflect stock-syncing and auto-republish; Activity Feed entries now
+  include both.
+- **Also fixed in this round**: `sourcing.suggestSpecs`,
+  `backlinker.discoverOpportunities`, and `backlinker.discoverBestSites`
+  (all added in Round 6) crashed with a raw, unhandled 500 instead of a
+  clean message when hitting the Anthropic credit-balance issue — found via
+  the same production log audit. All now catch and return an actionable
+  error, matching the try/catch convention used everywhere else in
+  `routers.ts`.
+- Verified: `npx tsc --noEmit` (0 errors), `npm run build` (succeeds),
+  `npx vitest run` (same 2 pre-existing unrelated Zapier failures). Not
+  live-clicked against a real store from this sandbox (no DB/Shopify
+  credentials here) — please run Scan Now after this deploys and confirm a
+  known out-of-stock CJ product actually gets hidden with the right stock
+  number, and that a restocked one comes back automatically on the next
+  scan.
+
 ## Round 6 — Fulfillment visibility overhaul (branch `claude/cj-shopify-api-connection-9ncdl0`)
 Round 5 (below) is merged and live. This round responds to: "I want
 fulfillment better, I want to see images of the orders, I want more access

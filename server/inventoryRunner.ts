@@ -20,6 +20,7 @@ import {
   updateAutomationSetting,
   logActivity,
   getSourcingAppCredential,
+  getInventorySnapshots,
   getDb,
 } from "./db";
 import { sourcedProducts } from "../drizzle/schema";
@@ -36,6 +37,9 @@ export type InventoryScanResult = {
   cjUnavailable: number;
   draftFailures: number;
   draftedTitles: string[];
+  stockSynced: number;
+  republishedCount: number;
+  republishedTitles: string[];
 };
 
 export function computeStatus(shopifyStock: number, supplierStock: number | null): "in_stock" | "low_stock" | "out_of_stock" {
@@ -51,6 +55,24 @@ export async function runInventoryScan(): Promise<InventoryScanResult> {
 
   const client = await getShopifyClient(config.storeDomain, decryptCredential(config.accessToken) ?? config.accessToken);
   const products = await client.getAllProducts();
+
+  // Real Shopify location to write live supplier stock back to — without
+  // this, Shopify's own inventory count stays frozen at whatever it was set
+  // to on import forever, since nothing else in this app ever updates it.
+  let locationId: string | null = null;
+  try {
+    const { locations } = await client.getLocations();
+    locationId = locations[0]?.id ? String(locations[0].id) : null;
+  } catch (err) {
+    console.warn("[Inventory] Failed to fetch Shopify location — real stock counts won't sync to Shopify this run:", err);
+  }
+
+  // Prior snapshot per variant — used below to only auto-republish products
+  // THIS app previously drafted for being out of stock, never one a
+  // merchant drafted manually for an unrelated reason (discontinued,
+  // pricing error, etc).
+  const priorSnapshots = await getInventorySnapshots(5000);
+  const priorStatusByVariant = new Map(priorSnapshots.map(s => [s.shopifyVariantId, s.status]));
 
   // Load CJ auth + the verified-CJ product map once per scan (not per
   // product) to keep this to a handful of extra calls, not hundreds.
@@ -71,7 +93,10 @@ export async function runInventoryScan(): Promise<InventoryScanResult> {
   let cjChecked = 0;
   let cjUnavailable = 0;
   let draftFailures = 0;
+  let stockSynced = 0;
+  let republishedCount = 0;
   const draftedTitles: string[] = [];
+  const republishedTitles: string[] = [];
 
   for (const product of products) {
     const imageUrl = product.images?.[0]?.src ?? null;
@@ -116,6 +141,22 @@ export async function runInventoryScan(): Promise<InventoryScanResult> {
       const supplierCaughtIt = supplierSource === "cj" && supplierStock === 0 && shopifyStock > 0;
       if (supplierCaughtIt) productSupplierOutOfStock = true;
 
+      // Push the real supplier stock into Shopify's own inventory count so
+      // it isn't just hidden internally — without this, Shopify's number
+      // stays frozen at whatever it was set to on import forever, since
+      // nothing else in this app ever corrects it. Only writes when we have
+      // a real number that actually differs, to avoid a pointless API call
+      // every 6h scan for every unchanged variant.
+      if (supplierStock !== null && supplierStock !== shopifyStock && locationId && variant.inventory_item_id) {
+        try {
+          await client.setInventoryLevel(String(variant.inventory_item_id), locationId, supplierStock);
+          stockSynced++;
+          await sleep(300);
+        } catch (err) {
+          console.warn(`[Inventory] Failed to sync real stock to Shopify for variant ${variant.id}:`, err);
+        }
+      }
+
       await upsertInventorySnapshot({
         shopifyProductId: String(product.id),
         shopifyVariantId: String(variant.id),
@@ -152,6 +193,24 @@ export async function runInventoryScan(): Promise<InventoryScanResult> {
         draftFailures++;
         console.warn(`[Inventory] Failed to draft out-of-stock product ${product.id}:`, draftErr);
       }
+    } else if (product.status === "draft") {
+      // Currently healthy (no variant out of stock this scan) but still
+      // drafted in Shopify — auto-republish ONLY if this app was the one
+      // that hid it (our own last snapshot recorded it out_of_stock), so a
+      // product a merchant intentionally drafted for an unrelated reason
+      // (discontinued, pricing error) is never resurrected behind their
+      // back. Always reversible with the existing manual Hide control.
+      const wasAutoOosHidden = product.variants.some(v => priorStatusByVariant.get(String(v.id)) === "out_of_stock");
+      if (wasAutoOosHidden) {
+        try {
+          await client.updateProduct(String(product.id), { status: "active" });
+          await setInventorySnapshotProductStatus(String(product.id), "active");
+          republishedCount++;
+          republishedTitles.push(product.title);
+        } catch (republishErr) {
+          console.warn(`[Inventory] Failed to auto-republish restocked product ${product.id}:`, republishErr);
+        }
+      }
     }
   }
 
@@ -164,7 +223,7 @@ export async function runInventoryScan(): Promise<InventoryScanResult> {
     }).catch(() => {});
   }
 
-  const summary = `scanned=${products.length} outOfStock=${outOfStockCount} supplierCaught=${supplierOutOfStockCount} cjChecked=${cjChecked}${cjUnavailable ? ` cjUnavailable=${cjUnavailable}` : ""}${draftFailures ? ` draftFails=${draftFailures}` : ""}`;
+  const summary = `scanned=${products.length} outOfStock=${outOfStockCount} supplierCaught=${supplierOutOfStockCount} cjChecked=${cjChecked}${cjUnavailable ? ` cjUnavailable=${cjUnavailable}` : ""}${draftFailures ? ` draftFails=${draftFailures}` : ""}${stockSynced ? ` stockSynced=${stockSynced}` : ""}${republishedCount ? ` republished=${republishedCount}` : ""}`;
   await updateAutomationSetting("inventory", {
     lastRunAt: new Date(),
     lastRunStatus: "success",
@@ -176,6 +235,12 @@ export async function runInventoryScan(): Promise<InventoryScanResult> {
     detailParts.push(`Auto-hidden (drafted): ${draftedTitles.slice(0, 10).join(", ")}${draftedTitles.length > 10 ? `, +${draftedTitles.length - 10} more` : ""}`);
   } else {
     detailParts.push("All scanned products have stock.");
+  }
+  if (republishedTitles.length) {
+    detailParts.push(`Auto-republished (restocked): ${republishedTitles.slice(0, 10).join(", ")}${republishedTitles.length > 10 ? `, +${republishedTitles.length - 10} more` : ""}`);
+  }
+  if (stockSynced > 0) {
+    detailParts.push(`Synced real supplier stock into Shopify's own inventory count for ${stockSynced} variant(s).`);
   }
   if (cjToken) {
     detailParts.push(
@@ -194,5 +259,5 @@ export async function runInventoryScan(): Promise<InventoryScanResult> {
     detail: detailParts.join(" "),
   });
 
-  return { scanned: products.length, outOfStockCount, supplierOutOfStockCount, cjChecked, cjUnavailable, draftFailures, draftedTitles };
+  return { scanned: products.length, outOfStockCount, supplierOutOfStockCount, cjChecked, cjUnavailable, draftFailures, draftedTitles, stockSynced, republishedCount, republishedTitles };
 }

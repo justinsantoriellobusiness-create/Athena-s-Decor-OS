@@ -1,0 +1,2 @@
+ALTER TABLE `email_prospects` MODIFY COLUMN `source` enum('competitor_scrape','web_research','manual','shopify_customer','form_signup','import') NOT NULL DEFAULT 'manual';--> statement-breakpoint
+ALTER TABLE `prospect_scrap_jobs` MODIFY COLUMN `method` enum('social_followers','review_sites','blog_comments','forum_posts','linkedin','website_scrape') NOT NULL DEFAULT 'review_sites';

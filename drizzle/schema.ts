@@ -610,7 +610,7 @@ export const emailProspects = mysqlTable("email_prospects", {
   lastName: varchar("lastName", { length: 128 }),
   company: varchar("company", { length: 255 }),
   website: varchar("website", { length: 512 }),
-  source: mysqlEnum("source", ["competitor_scrape", "manual", "shopify_customer", "form_signup", "import"]).default("manual").notNull(),
+  source: mysqlEnum("source", ["competitor_scrape", "web_research", "manual", "shopify_customer", "form_signup", "import"]).default("manual").notNull(),
   sourceDetail: varchar("sourceDetail", { length: 255 }),  // e.g. competitor domain
   tags: text("tags"),  // comma-separated
   status: mysqlEnum("status", ["active", "unsubscribed", "bounced", "spam"]).default("active").notNull(),
@@ -640,7 +640,7 @@ export const prospectScrapJobs = mysqlTable("prospect_scrap_jobs", {
   id: int("id").autoincrement().primaryKey(),
   userId: int("userId").notNull(),
   competitorDomain: varchar("competitorDomain", { length: 255 }).notNull(),
-  method: mysqlEnum("method", ["social_followers", "review_sites", "blog_comments", "forum_posts", "linkedin"]).default("review_sites").notNull(),
+  method: mysqlEnum("method", ["social_followers", "review_sites", "blog_comments", "forum_posts", "linkedin", "website_scrape"]).default("review_sites").notNull(),
   status: mysqlEnum("status", ["pending", "running", "completed", "failed"]).default("pending").notNull(),
   prospectsFound: int("prospectsFound").default(0).notNull(),
   errorMessage: text("errorMessage"),
