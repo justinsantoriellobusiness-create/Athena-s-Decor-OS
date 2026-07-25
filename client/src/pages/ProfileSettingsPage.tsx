@@ -8,7 +8,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { toast } from "sonner";
-import { Loader2, Palette, Building2, Upload, Trash2, Check, Sparkles } from "lucide-react";
+import { Loader2, Palette, Building2, Upload, Trash2, Check, Sparkles, KeyRound } from "lucide-react";
 import { DASHBOARD_THEMES } from "@/lib/themes";
 
 export default function ProfileSettingsPage() {
@@ -25,8 +25,16 @@ export default function ProfileSettingsPage() {
     onSuccess: () => { toast.success("Logo removed"); settingsQuery.refetch(); },
     onError: (e) => toast.error(e.message),
   });
+  const changePasswordMutation = trpc.auth.changePassword.useMutation({
+    onSuccess: () => {
+      toast.success("Password changed");
+      setPasswordForm({ currentPassword: "", newPassword: "", confirmPassword: "" });
+    },
+    onError: (e) => toast.error(e.message),
+  });
 
   const [appName, setAppName] = useState("");
+  const [passwordForm, setPasswordForm] = useState({ currentPassword: "", newPassword: "", confirmPassword: "" });
   const [profile, setProfile] = useState({
     businessName: "", niche: "", targetAudience: "", brandVoice: "",
     priceTier: "" as "" | "budget" | "mid_range" | "premium" | "luxury",
@@ -80,6 +88,21 @@ export default function ProfileSettingsPage() {
     });
   };
 
+  const handleChangePassword = () => {
+    if (passwordForm.newPassword.length < 8) {
+      toast.error("New password must be at least 8 characters");
+      return;
+    }
+    if (passwordForm.newPassword !== passwordForm.confirmPassword) {
+      toast.error("New passwords don't match");
+      return;
+    }
+    changePasswordMutation.mutate({
+      currentPassword: passwordForm.currentPassword,
+      newPassword: passwordForm.newPassword,
+    });
+  };
+
   if (settingsQuery.isLoading) {
     return <div className="p-6 flex items-center justify-center h-64"><Loader2 className="w-8 h-8 animate-spin text-white/30" /></div>;
   }
@@ -95,6 +118,7 @@ export default function ProfileSettingsPage() {
         <TabsList className="bg-white/5 border border-white/10">
           <TabsTrigger value="branding" className="data-[state=active]:bg-violet-600"><Palette className="w-3.5 h-3.5 mr-1.5" />Branding</TabsTrigger>
           <TabsTrigger value="business" className="data-[state=active]:bg-violet-600"><Building2 className="w-3.5 h-3.5 mr-1.5" />Business Profile</TabsTrigger>
+          <TabsTrigger value="account" className="data-[state=active]:bg-violet-600"><KeyRound className="w-3.5 h-3.5 mr-1.5" />Account</TabsTrigger>
         </TabsList>
 
         {/* ── Branding ── */}
@@ -235,6 +259,54 @@ export default function ProfileSettingsPage() {
               <Button onClick={saveProfile} disabled={updateMutation.isPending} className="bg-violet-600 hover:bg-violet-500">
                 {updateMutation.isPending ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : null}
                 Save Business Profile
+              </Button>
+            </CardContent>
+          </Card>
+        </TabsContent>
+
+        {/* ── Account ── */}
+        <TabsContent value="account" className="space-y-4 mt-4">
+          <Card className="bg-white/5 border-white/10">
+            <CardHeader><CardTitle className="text-white text-base">Change Password</CardTitle></CardHeader>
+            <CardContent className="space-y-4 max-w-sm">
+              <div>
+                <Label className="text-xs text-white/50">Current Password</Label>
+                <Input
+                  type="password"
+                  value={passwordForm.currentPassword}
+                  onChange={(e) => setPasswordForm((p) => ({ ...p, currentPassword: e.target.value }))}
+                  className="bg-white/5 border-white/10 text-white mt-1"
+                  autoComplete="current-password"
+                />
+              </div>
+              <div>
+                <Label className="text-xs text-white/50">New Password</Label>
+                <Input
+                  type="password"
+                  value={passwordForm.newPassword}
+                  onChange={(e) => setPasswordForm((p) => ({ ...p, newPassword: e.target.value }))}
+                  className="bg-white/5 border-white/10 text-white mt-1"
+                  autoComplete="new-password"
+                  placeholder="At least 8 characters"
+                />
+              </div>
+              <div>
+                <Label className="text-xs text-white/50">Confirm New Password</Label>
+                <Input
+                  type="password"
+                  value={passwordForm.confirmPassword}
+                  onChange={(e) => setPasswordForm((p) => ({ ...p, confirmPassword: e.target.value }))}
+                  className="bg-white/5 border-white/10 text-white mt-1"
+                  autoComplete="new-password"
+                />
+              </div>
+              <Button
+                onClick={handleChangePassword}
+                disabled={changePasswordMutation.isPending || !passwordForm.currentPassword || !passwordForm.newPassword}
+                className="bg-violet-600 hover:bg-violet-500"
+              >
+                {changePasswordMutation.isPending ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : null}
+                Change Password
               </Button>
             </CardContent>
           </Card>

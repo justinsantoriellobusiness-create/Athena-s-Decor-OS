@@ -176,6 +176,13 @@
       "when": 1784985166478,
       "tag": "0024_add_web_research_prospect_source",
       "breakpoints": true
+    },
+    {
+      "idx": 25,
+      "version": "5",
+      "when": 1785007239274,
+      "tag": "0025_add_user_password_hash",
+      "breakpoints": true
     }
   ]
 }

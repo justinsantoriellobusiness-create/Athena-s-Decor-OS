@@ -14,6 +14,7 @@ import { fetchPayPalTransactions } from "./_core/paypal";
 import { fetchEbayTransactions } from "./_core/ebay";
 import { publishFacebookCampaign, publishTikTokCampaign } from "./_core/adPlatforms";
 import { isFirecrawlConfigured, searchRealBacklinkCandidates, searchRealWebsiteCandidates, firecrawlScrapeContactInfo } from "./_core/firecrawl";
+import { hashPassword, verifyPasswordHash, safeEquals } from "./_core/passwordAuth";
 import { runFullAudit, applyAllAuditFixes } from "./auditRunner";
 import { runSourcingScrape } from "./sourcingRunner";
 import { optimizeActiveCampaignBudgets } from "./adsRunner";
@@ -114,6 +115,8 @@ import {
   getAppSettings,
   upsertAppSettings,
   getBusinessContextForAI,
+  getUserByOpenId,
+  upsertUser,
 } from "./db";
 import { runInventoryScan, computeStatus } from "./inventoryRunner";
 import { runAutoFulfillment, deriveOrderStatus } from "./fulfillmentRunner";
@@ -144,6 +147,27 @@ const authRouter = router({
     ctx.res.clearCookie(COOKIE_NAME, { ...cookieOptions, maxAge: -1 });
     return { success: true } as const;
   }),
+
+  // Verifies against whichever mechanism currently authenticates login (a
+  // previously-set DB password hash, or the bootstrap ADMIN_PASSWORD env
+  // var if none has been set yet — same precedence as the login route),
+  // then stores a new hash that takes over from here on.
+  changePassword: protectedProcedure
+    .input(z.object({
+      currentPassword: z.string().min(1),
+      newPassword: z.string().min(8, "New password must be at least 8 characters"),
+    }))
+    .mutation(async ({ ctx, input }) => {
+      const existingUser = await getUserByOpenId(ctx.user.openId);
+      const currentOk = existingUser?.passwordHash
+        ? verifyPasswordHash(input.currentPassword, existingUser.passwordHash)
+        : !!ENV.adminPassword && safeEquals(input.currentPassword, ENV.adminPassword);
+      if (!currentOk) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: "Current password is incorrect." });
+      }
+      await upsertUser({ openId: ctx.user.openId, passwordHash: hashPassword(input.newPassword) });
+      return { success: true };
+    }),
 });
 
 // ─── Shopify Router ───────────────────────────────────────────────────────────

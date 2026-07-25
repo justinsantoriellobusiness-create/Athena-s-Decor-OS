@@ -10,6 +10,32 @@ repo `justinsantoriellobusiness-create/Athena-s-Decor-OS`, branch `main`.
 Stack: Express + tRPC + Drizzle ORM (MySQL) backend, React + Vite frontend,
 Anthropic Claude for all LLM calls.
 
+## Round 9 — Change Password in Settings
+Login previously had no real user-password store at all — the only "admin
+password" was the `ADMIN_PASSWORD` Railway env var, string-compared
+directly against what was typed at login (`server/_core/passwordAuth.ts`).
+There was nothing in the database to "change."
+- Added `users.passwordHash` (migration `0025`) — nullable; null means the
+  account still authenticates against `ADMIN_PASSWORD` (unchanged
+  bootstrap behavior, nothing breaks for anyone who never uses this). Once
+  set, it takes precedence over the env var for login.
+- Hashing uses Node's built-in `scrypt` (`server/_core/passwordAuth.ts`,
+  `hashPassword`/`verifyPasswordHash`) — no new dependency, same
+  native-crypto-over-a-library pattern `crypto.ts` already uses for
+  credential encryption.
+- New `auth.changePassword` mutation verifies the current password against
+  whichever mechanism is currently active, then stores a new hash.
+- UI: Settings (`/settings`) → new **Account** tab → Change Password card.
+- Did NOT build a "change the Railway env var from the app" version —
+  that would require the app itself to hold a Railway API token with
+  write access to its own deployment config, a materially worse security
+  posture than a normal hashed DB password, and changing a Railway var
+  triggers a redeploy anyway. This DB-backed approach works instantly, no
+  redeploy, no extra platform credentials for the app to hold.
+- Verified: `npx tsc --noEmit` (0 errors), `npm run build` (succeeds),
+  `npx vitest run` (same 2 pre-existing unrelated Zapier failures). Not
+  live-tested — this sandbox has no DB to actually log in against.
+
 ## Round 8 — Real website/email prospect scraper (replaces Dataminer.io idea)
 User asked about setting up Dataminer.io to power the Email Scraper "for
 real." Researched their actual API surface before building anything:
