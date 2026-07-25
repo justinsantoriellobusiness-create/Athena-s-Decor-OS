@@ -55,6 +55,27 @@ function clearAttempts(ip: string) {
   attempts.delete(ip);
 }
 
+// A 4-6 digit PIN has a small keyspace, so unlock attempts get their own
+// (stricter) limiter rather than sharing the login one.
+const MAX_PIN_ATTEMPTS = 5;
+const PIN_WINDOW_MS = 5 * 60_000;
+const pinAttempts = new Map<string, { count: number; windowStart: number }>();
+
+export function isPinRateLimited(key: string): boolean {
+  const now = Date.now();
+  const entry = pinAttempts.get(key);
+  if (!entry || now - entry.windowStart > PIN_WINDOW_MS) {
+    pinAttempts.set(key, { count: 1, windowStart: now });
+    return false;
+  }
+  entry.count++;
+  return entry.count > MAX_PIN_ATTEMPTS;
+}
+
+export function clearPinAttempts(key: string) {
+  pinAttempts.delete(key);
+}
+
 // Constant-time string compare via hash — avoids leaking how many leading
 // characters matched through response-time variance.
 export function safeEquals(a: string, b: string): boolean {

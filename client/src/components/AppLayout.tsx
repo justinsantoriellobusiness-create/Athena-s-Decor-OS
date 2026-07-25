@@ -9,6 +9,7 @@ import {
 } from "lucide-react";
 import { trpc } from "@/lib/trpc";
 import ErrorBoundary from "@/components/ErrorBoundary";
+import PinLock from "@/components/PinLock";
 import { getTheme } from "@/lib/themes";
 
 const navSections = [
@@ -95,6 +96,7 @@ export default function AppLayout({ children, noPadding }: AppLayoutProps) {
   }
 
   return (
+    <PinLock>
     <div className="min-h-screen flex bg-[#08080f]">
       {/* Sidebar */}
       <aside className="w-60 flex-shrink-0 flex flex-col border-r border-white/5 bg-[#0a0a14]">
@@ -179,5 +181,6 @@ export default function AppLayout({ children, noPadding }: AppLayoutProps) {
         <ErrorBoundary>{children}</ErrorBoundary>
       </main>
     </div>
+    </PinLock>
   );
 }

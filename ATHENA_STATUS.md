@@ -10,6 +10,30 @@ repo `justinsantoriellobusiness-create/Athena-s-Decor-OS`, branch `main`.
 Stack: Express + tRPC + Drizzle ORM (MySQL) backend, React + Vite frontend,
 Anthropic Claude for all LLM calls.
 
+## Round 10 — PIN access (screen lock) with on/off toggle
+A short PIN to get back into the app, so the full password isn't needed
+every time. Scope chosen with the owner: an **app-wide lock screen**, not
+per-page gating.
+- Added `users.pinHash` + `users.pinEnabled` (migration `0026`). Same
+  scrypt `salt:hash` format as `passwordHash`; the hash never leaves the
+  server — the client only learns `{ isSet, enabled }`.
+- `auth.setPin` requires the account password, so a PIN can't be silently
+  swapped by someone who walks up to an already-unlocked screen.
+  `auth.setPinEnabled` is the toggle and refuses to turn on without a PIN
+  set. `auth.verifyPin` is rate-limited separately from login (5 tries /
+  5 min) because a 4-digit PIN has a small keyspace.
+- `client/src/components/PinLock.tsx` wraps `AppLayout`, so every
+  authenticated route is behind it. Unlock state lives in `sessionStorage`
+  (closing the tab/app re-locks) plus a 15-minute idle timer.
+- A fresh password login sets the unlock flag (`LoginPage.tsx`). Without
+  that, the lock screen's "forgot PIN → sign out" escape hatch would loop
+  straight back to a locked screen.
+
+**Known limit, stated honestly:** this is a convenience screen lock over an
+already-authenticated session — the session cookie stays valid while
+locked, so it protects against someone picking up an open laptop, not
+against someone with devtools. Signing out is still the hard boundary.
+
 ## Round 9 — Change Password in Settings
 Login previously had no real user-password store at all — the only "admin
 password" was the `ADMIN_PASSWORD` Railway env var, string-compared
