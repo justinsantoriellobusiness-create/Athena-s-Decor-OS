@@ -14,6 +14,7 @@ import { fetchPayPalTransactions } from "./_core/paypal";
 import { fetchEbayTransactions } from "./_core/ebay";
 import { publishFacebookCampaign, publishTikTokCampaign } from "./_core/adPlatforms";
 import { isFirecrawlConfigured, searchRealBacklinkCandidates, searchRealWebsiteCandidates, firecrawlScrapeContactInfo } from "./_core/firecrawl";
+import { hashPassword, verifyPasswordHash, safeEquals, isPinRateLimited, clearPinAttempts } from "./_core/passwordAuth";
 import { runFullAudit, applyAllAuditFixes } from "./auditRunner";
 import { runSourcingScrape } from "./sourcingRunner";
 import { optimizeActiveCampaignBudgets } from "./adsRunner";
@@ -114,6 +115,8 @@ import {
   getAppSettings,
   upsertAppSettings,
   getBusinessContextForAI,
+  getUserByOpenId,
+  upsertUser,
 } from "./db";
 import { runInventoryScan, computeStatus } from "./inventoryRunner";
 import { runAutoFulfillment, deriveOrderStatus } from "./fulfillmentRunner";
@@ -144,6 +147,90 @@ const authRouter = router({
     ctx.res.clearCookie(COOKIE_NAME, { ...cookieOptions, maxAge: -1 });
     return { success: true } as const;
   }),
+
+  // Verifies against whichever mechanism currently authenticates login (a
+  // previously-set DB password hash, or the bootstrap ADMIN_PASSWORD env
+  // var if none has been set yet — same precedence as the login route),
+  // then stores a new hash that takes over from here on.
+  changePassword: protectedProcedure
+    .input(z.object({
+      currentPassword: z.string().min(1),
+      newPassword: z.string().min(8, "New password must be at least 8 characters"),
+    }))
+    .mutation(async ({ ctx, input }) => {
+      const existingUser = await getUserByOpenId(ctx.user.openId);
+      const currentOk = existingUser?.passwordHash
+        ? verifyPasswordHash(input.currentPassword, existingUser.passwordHash)
+        : !!ENV.adminPassword && safeEquals(input.currentPassword, ENV.adminPassword);
+      if (!currentOk) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: "Current password is incorrect." });
+      }
+      await upsertUser({ openId: ctx.user.openId, passwordHash: hashPassword(input.newPassword) });
+      return { success: true };
+    }),
+
+  // The PIN is a screen lock over an already-authenticated session. The hash
+  // never leaves the server — the client only learns whether a PIN exists and
+  // whether the lock is switched on.
+  pinStatus: protectedProcedure.query(async ({ ctx }) => {
+    const existingUser = await getUserByOpenId(ctx.user.openId);
+    return {
+      isSet: !!existingUser?.pinHash,
+      enabled: !!existingUser?.pinEnabled,
+    };
+  }),
+
+  // Setting or replacing the PIN requires the account password, so a PIN can't
+  // be silently swapped by someone who walked up to an unlocked screen.
+  setPin: protectedProcedure
+    .input(z.object({
+      currentPassword: z.string().min(1),
+      pin: z.string().regex(/^\d{4,8}$/, "PIN must be 4-8 digits"),
+    }))
+    .mutation(async ({ ctx, input }) => {
+      const existingUser = await getUserByOpenId(ctx.user.openId);
+      const passwordOk = existingUser?.passwordHash
+        ? verifyPasswordHash(input.currentPassword, existingUser.passwordHash)
+        : !!ENV.adminPassword && safeEquals(input.currentPassword, ENV.adminPassword);
+      if (!passwordOk) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: "Password is incorrect." });
+      }
+      await upsertUser({
+        openId: ctx.user.openId,
+        pinHash: hashPassword(input.pin),
+        pinEnabled: true,
+      });
+      clearPinAttempts(ctx.user.openId);
+      return { success: true };
+    }),
+
+  setPinEnabled: protectedProcedure
+    .input(z.object({ enabled: z.boolean() }))
+    .mutation(async ({ ctx, input }) => {
+      const existingUser = await getUserByOpenId(ctx.user.openId);
+      if (input.enabled && !existingUser?.pinHash) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: "Set a PIN before turning on PIN access." });
+      }
+      await upsertUser({ openId: ctx.user.openId, pinEnabled: input.enabled });
+      return { success: true };
+    }),
+
+  verifyPin: protectedProcedure
+    .input(z.object({ pin: z.string().min(1) }))
+    .mutation(async ({ ctx, input }) => {
+      if (isPinRateLimited(ctx.user.openId)) {
+        throw new TRPCError({
+          code: "TOO_MANY_REQUESTS",
+          message: "Too many incorrect PIN attempts. Wait 5 minutes or sign out and use your password.",
+        });
+      }
+      const existingUser = await getUserByOpenId(ctx.user.openId);
+      if (!existingUser?.pinHash || !verifyPasswordHash(input.pin, existingUser.pinHash)) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: "Incorrect PIN." });
+      }
+      clearPinAttempts(ctx.user.openId);
+      return { success: true };
+    }),
 });
 
 // ─── Shopify Router ───────────────────────────────────────────────────────────

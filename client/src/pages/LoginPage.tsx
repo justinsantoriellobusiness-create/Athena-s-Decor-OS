@@ -27,6 +27,10 @@ export default function LoginPage() {
         setLoading(false);
         return;
       }
+      // The password outranks the PIN, so a fresh password login starts
+      // unlocked — otherwise "forgot PIN, sign out" would land right back on
+      // the lock screen with no way through.
+      sessionStorage.setItem("athena.pinUnlocked", "1");
       window.location.href = "/";
     } catch {
       setError("Login failed. Please try again.");

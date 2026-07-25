@@ -19,6 +19,16 @@ export const users = mysqlTable("users", {
   email: varchar("email", { length: 320 }),
   loginMethod: varchar("loginMethod", { length: 64 }),
   role: mysqlEnum("role", ["user", "admin"]).default("user").notNull(),
+  // scrypt hash as "saltBase64:hashBase64", set via Settings > Change
+  // Password. Null means the account still authenticates against the
+  // ADMIN_PASSWORD env var (the original bootstrap mechanism) — once set,
+  // this takes precedence over that env var for login.
+  passwordHash: varchar("passwordHash", { length: 255 }),
+  // Same scrypt "saltBase64:hashBase64" format as passwordHash. The PIN is a
+  // screen lock on top of an already-authenticated session, not a second
+  // login — pinEnabled is what the Settings toggle flips.
+  pinHash: varchar("pinHash", { length: 255 }),
+  pinEnabled: boolean("pinEnabled").default(false).notNull(),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
   updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
   lastSignedIn: timestamp("lastSignedIn").defaultNow().notNull(),

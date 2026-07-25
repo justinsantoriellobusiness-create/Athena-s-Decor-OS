@@ -176,6 +176,20 @@
       "when": 1784985166478,
       "tag": "0024_add_web_research_prospect_source",
       "breakpoints": true
+    },
+    {
+      "idx": 25,
+      "version": "5",
+      "when": 1785007239274,
+      "tag": "0025_add_user_password_hash",
+      "breakpoints": true
+    },
+    {
+      "idx": 26,
+      "version": "5",
+      "when": 1785010205177,
+      "tag": "0026_add_user_pin_lock",
+      "breakpoints": true
     }
   ]
 }

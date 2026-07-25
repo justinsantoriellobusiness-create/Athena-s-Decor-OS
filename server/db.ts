@@ -77,7 +77,7 @@ export async function upsertUser(user: InsertUser): Promise<void> {
 
   const values: InsertUser = { openId: user.openId };
   const updateSet: Record<string, unknown> = {};
-  const textFields = ["name", "email", "loginMethod"] as const;
+  const textFields = ["name", "email", "loginMethod", "passwordHash", "pinHash"] as const;
   textFields.forEach((field) => {
     const value = user[field];
     if (value === undefined) return;
@@ -85,6 +85,10 @@ export async function upsertUser(user: InsertUser): Promise<void> {
     values[field] = normalized;
     updateSet[field] = normalized;
   });
+  if (user.pinEnabled !== undefined) {
+    values.pinEnabled = user.pinEnabled;
+    updateSet.pinEnabled = user.pinEnabled;
+  }
   if (user.lastSignedIn !== undefined) {
     values.lastSignedIn = user.lastSignedIn;
     updateSet.lastSignedIn = user.lastSignedIn;

@@ -7,8 +7,9 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Switch } from "@/components/ui/switch";
 import { toast } from "sonner";
-import { Loader2, Palette, Building2, Upload, Trash2, Check, Sparkles } from "lucide-react";
+import { Loader2, Palette, Building2, Upload, Trash2, Check, Sparkles, KeyRound } from "lucide-react";
 import { DASHBOARD_THEMES } from "@/lib/themes";
 
 export default function ProfileSettingsPage() {
@@ -25,8 +26,34 @@ export default function ProfileSettingsPage() {
     onSuccess: () => { toast.success("Logo removed"); settingsQuery.refetch(); },
     onError: (e) => toast.error(e.message),
   });
+  const changePasswordMutation = trpc.auth.changePassword.useMutation({
+    onSuccess: () => {
+      toast.success("Password changed");
+      setPasswordForm({ currentPassword: "", newPassword: "", confirmPassword: "" });
+    },
+    onError: (e) => toast.error(e.message),
+  });
+
+  const pinStatusQuery = trpc.auth.pinStatus.useQuery();
+  const setPinMutation = trpc.auth.setPin.useMutation({
+    onSuccess: () => {
+      toast.success("PIN saved — PIN access is on");
+      setPinForm({ currentPassword: "", pin: "", confirmPin: "" });
+      pinStatusQuery.refetch();
+    },
+    onError: (e) => toast.error(e.message),
+  });
+  const setPinEnabledMutation = trpc.auth.setPinEnabled.useMutation({
+    onSuccess: (_d, vars) => {
+      toast.success(vars.enabled ? "PIN access turned on" : "PIN access turned off");
+      pinStatusQuery.refetch();
+    },
+    onError: (e) => toast.error(e.message),
+  });
 
   const [appName, setAppName] = useState("");
+  const [passwordForm, setPasswordForm] = useState({ currentPassword: "", newPassword: "", confirmPassword: "" });
+  const [pinForm, setPinForm] = useState({ currentPassword: "", pin: "", confirmPin: "" });
   const [profile, setProfile] = useState({
     businessName: "", niche: "", targetAudience: "", brandVoice: "",
     priceTier: "" as "" | "budget" | "mid_range" | "premium" | "luxury",
@@ -80,6 +107,33 @@ export default function ProfileSettingsPage() {
     });
   };
 
+  const handleChangePassword = () => {
+    if (passwordForm.newPassword.length < 8) {
+      toast.error("New password must be at least 8 characters");
+      return;
+    }
+    if (passwordForm.newPassword !== passwordForm.confirmPassword) {
+      toast.error("New passwords don't match");
+      return;
+    }
+    changePasswordMutation.mutate({
+      currentPassword: passwordForm.currentPassword,
+      newPassword: passwordForm.newPassword,
+    });
+  };
+
+  const handleSetPin = () => {
+    if (!/^\d{4,8}$/.test(pinForm.pin)) {
+      toast.error("PIN must be 4-8 digits");
+      return;
+    }
+    if (pinForm.pin !== pinForm.confirmPin) {
+      toast.error("PINs don't match");
+      return;
+    }
+    setPinMutation.mutate({ currentPassword: pinForm.currentPassword, pin: pinForm.pin });
+  };
+
   if (settingsQuery.isLoading) {
     return <div className="p-6 flex items-center justify-center h-64"><Loader2 className="w-8 h-8 animate-spin text-white/30" /></div>;
   }
@@ -95,6 +149,7 @@ export default function ProfileSettingsPage() {
         <TabsList className="bg-white/5 border border-white/10">
           <TabsTrigger value="branding" className="data-[state=active]:bg-violet-600"><Palette className="w-3.5 h-3.5 mr-1.5" />Branding</TabsTrigger>
           <TabsTrigger value="business" className="data-[state=active]:bg-violet-600"><Building2 className="w-3.5 h-3.5 mr-1.5" />Business Profile</TabsTrigger>
+          <TabsTrigger value="account" className="data-[state=active]:bg-violet-600"><KeyRound className="w-3.5 h-3.5 mr-1.5" />Account</TabsTrigger>
         </TabsList>
 
         {/* ── Branding ── */}
@@ -236,6 +291,125 @@ export default function ProfileSettingsPage() {
                 {updateMutation.isPending ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : null}
                 Save Business Profile
               </Button>
+            </CardContent>
+          </Card>
+        </TabsContent>
+
+        {/* ── Account ── */}
+        <TabsContent value="account" className="space-y-4 mt-4">
+          <Card className="bg-white/5 border-white/10">
+            <CardHeader><CardTitle className="text-white text-base">Change Password</CardTitle></CardHeader>
+            <CardContent className="space-y-4 max-w-sm">
+              <div>
+                <Label className="text-xs text-white/50">Current Password</Label>
+                <Input
+                  type="password"
+                  value={passwordForm.currentPassword}
+                  onChange={(e) => setPasswordForm((p) => ({ ...p, currentPassword: e.target.value }))}
+                  className="bg-white/5 border-white/10 text-white mt-1"
+                  autoComplete="current-password"
+                />
+              </div>
+              <div>
+                <Label className="text-xs text-white/50">New Password</Label>
+                <Input
+                  type="password"
+                  value={passwordForm.newPassword}
+                  onChange={(e) => setPasswordForm((p) => ({ ...p, newPassword: e.target.value }))}
+                  className="bg-white/5 border-white/10 text-white mt-1"
+                  autoComplete="new-password"
+                  placeholder="At least 8 characters"
+                />
+              </div>
+              <div>
+                <Label className="text-xs text-white/50">Confirm New Password</Label>
+                <Input
+                  type="password"
+                  value={passwordForm.confirmPassword}
+                  onChange={(e) => setPasswordForm((p) => ({ ...p, confirmPassword: e.target.value }))}
+                  className="bg-white/5 border-white/10 text-white mt-1"
+                  autoComplete="new-password"
+                />
+              </div>
+              <Button
+                onClick={handleChangePassword}
+                disabled={changePasswordMutation.isPending || !passwordForm.currentPassword || !passwordForm.newPassword}
+                className="bg-violet-600 hover:bg-violet-500"
+              >
+                {changePasswordMutation.isPending ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : null}
+                Change Password
+              </Button>
+            </CardContent>
+          </Card>
+
+          <Card className="bg-white/5 border-white/10">
+            <CardHeader><CardTitle className="text-white text-base">PIN Access</CardTitle></CardHeader>
+            <CardContent className="space-y-5 max-w-sm">
+              <div className="flex items-start justify-between gap-4">
+                <div>
+                  <p className="text-sm text-white">Lock the app with a PIN</p>
+                  <p className="text-xs text-white/40 mt-1">
+                    When on, the app locks after 15 minutes idle or when you close it, and asks for
+                    your PIN instead of your full password.
+                  </p>
+                </div>
+                <Switch
+                  checked={!!pinStatusQuery.data?.enabled}
+                  disabled={!pinStatusQuery.data?.isSet || setPinEnabledMutation.isPending}
+                  onCheckedChange={(enabled) => setPinEnabledMutation.mutate({ enabled })}
+                />
+              </div>
+
+              {!pinStatusQuery.data?.isSet && (
+                <p className="text-xs text-amber-400/80">Set a PIN below to turn this on.</p>
+              )}
+
+              <div className="pt-2 border-t border-white/10 space-y-4">
+                <p className="text-xs text-white/50">
+                  {pinStatusQuery.data?.isSet ? "Change your PIN" : "Set a PIN"}
+                </p>
+                <div>
+                  <Label className="text-xs text-white/50">Account Password</Label>
+                  <Input
+                    type="password"
+                    value={pinForm.currentPassword}
+                    onChange={(e) => setPinForm((p) => ({ ...p, currentPassword: e.target.value }))}
+                    className="bg-white/5 border-white/10 text-white mt-1"
+                    autoComplete="current-password"
+                  />
+                </div>
+                <div>
+                  <Label className="text-xs text-white/50">New PIN</Label>
+                  <Input
+                    type="password"
+                    inputMode="numeric"
+                    maxLength={8}
+                    value={pinForm.pin}
+                    onChange={(e) => setPinForm((p) => ({ ...p, pin: e.target.value.replace(/\D/g, "") }))}
+                    className="bg-white/5 border-white/10 text-white mt-1"
+                    placeholder="4-8 digits"
+                  />
+                </div>
+                <div>
+                  <Label className="text-xs text-white/50">Confirm PIN</Label>
+                  <Input
+                    type="password"
+                    inputMode="numeric"
+                    maxLength={8}
+                    value={pinForm.confirmPin}
+                    onChange={(e) => setPinForm((p) => ({ ...p, confirmPin: e.target.value.replace(/\D/g, "") }))}
+                    className="bg-white/5 border-white/10 text-white mt-1"
+                  />
+                </div>
+                <Button
+                  onClick={handleSetPin}
+                  disabled={setPinMutation.isPending || !pinForm.currentPassword || !pinForm.pin}
+                  className="bg-violet-600 hover:bg-violet-500"
+                >
+                  {setPinMutation.isPending ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : null}
+                  {pinStatusQuery.data?.isSet ? "Update PIN" : "Set PIN"}
+                </Button>
+              </div>
             </CardContent>
           </Card>
         </TabsContent>
