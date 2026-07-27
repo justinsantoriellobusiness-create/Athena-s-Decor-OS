@@ -221,7 +221,12 @@ const resolveApiUrl = () =>
 // Forge key is configured, fall back to calling Anthropic's API directly
 // using the same OpenAI-style request/response shape the rest of the app
 // already speaks, so no call sites need to change.
-const ANTHROPIC_API_URL = "https://api.anthropic.com/v1/messages";
+// ANTHROPIC_BASE_URL overrides the host (path/version stay fixed) — mainly
+// so this can be pointed at a local capture server to verify the outgoing
+// request shape without spending real API credit.
+const ANTHROPIC_API_URL = ENV.anthropicBaseUrl
+  ? `${ENV.anthropicBaseUrl.replace(/\/$/, "")}/v1/messages`
+  : "https://api.anthropic.com/v1/messages";
 const ANTHROPIC_VERSION = "2023-06-01";
 const DEFAULT_ANTHROPIC_MODEL = "claude-sonnet-5";
 const DEFAULT_MAX_TOKENS = 4096;
@@ -312,7 +317,21 @@ const invokeAnthropic = async (
     messages: anthropicMessages,
   };
   if (systemParts.length > 0) {
-    payload.system = systemParts.join("\n\n");
+    // Prompt caching: marking the system block ephemeral lets any later call
+    // within the 5-minute cache window reuse it at ~10% of the input-token
+    // cost instead of paying full price again — valuable for repeated calls
+    // that share a system prompt (e.g. the AI Assistant's multi-turn chat,
+    // or a bulk-optimize loop hitting the same prompt per item). Below
+    // Anthropic's per-model minimum cacheable length the API just ignores
+    // the marker and bills normally rather than erroring, so this is safe
+    // to apply unconditionally instead of gating it on prompt size.
+    payload.system = [
+      {
+        type: "text",
+        text: systemParts.join("\n\n"),
+        cache_control: { type: "ephemeral" },
+      },
+    ];
   }
 
   const response = await fetchWithBackoff(ANTHROPIC_API_URL, {
