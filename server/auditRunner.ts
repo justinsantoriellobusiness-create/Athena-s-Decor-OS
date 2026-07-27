@@ -193,6 +193,7 @@ export async function applyAllAuditFixes(runId: number): Promise<{ fixed: number
             { role: "user", content: `Generate a fix for: ${issue.description ?? issue.issueType} on page "${issue.pageTitle}". Current: "${issue.currentValue ?? "empty"}". Issue type: ${issue.issueType}. Return JSON: { "fixValue": string }` },
           ],
           response_format: { type: "json_schema", json_schema: { name: "fix_gen", strict: true, schema: { type: "object", properties: { fixValue: { type: "string" } }, required: ["fixValue"], additionalProperties: false } } },
+          maxTokens: 300, // single field, longest case is a ~160-char meta description
         });
         const raw = genResponse.choices[0]?.message?.content;
         fixValue = JSON.parse(typeof raw === "string" ? raw : "{}").fixValue ?? "";

@@ -13,6 +13,10 @@ export const ENV = {
   forgeApiUrl: process.env.BUILT_IN_FORGE_API_URL ?? "",
   forgeApiKey: process.env.BUILT_IN_FORGE_API_KEY ?? "",
   anthropicApiKey: process.env.ANTHROPIC_API_KEY ?? "",
+  // Overrides the Anthropic API host (path/version stay fixed) — normally
+  // unset; lets ops or tests point the direct-Anthropic fallback path at a
+  // proxy or local capture server instead of api.anthropic.com.
+  anthropicBaseUrl: process.env.ANTHROPIC_BASE_URL ?? "",
   ZAPIER_EMBED_ID: process.env.ZAPIER_EMBED_ID ?? "",
   ZAPIER_API_SECRET: process.env.ZAPIER_API_SECRET ?? "",
   WIX_API_KEY: process.env.WIX_API_KEY ?? "",

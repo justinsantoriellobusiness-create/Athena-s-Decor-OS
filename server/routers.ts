@@ -653,7 +653,9 @@ Return JSON: { "score": number (0-100), "issues": [{ "category": string, "severi
         for (const product of products.slice(0, 50)) {
           for (const image of (product.images || []).slice(0, 3)) {
             try {
-              const resp = await invokeLLM({ messages: [{ role: "user", content: `Generate SEO-optimized alt text (max 125 chars) for a home decor product image. Product: "${product.title}". Return JSON: { "altText": string }` }], response_format: { type: "json_schema", json_schema: { name: "alt", strict: true, schema: { type: "object", properties: { altText: { type: "string" } }, required: ["altText"], additionalProperties: false } } } });
+              // Output is one field capped at 125 chars — the default 4096-token
+              // cap is ~30x more than this call could ever legitimately need.
+              const resp = await invokeLLM({ messages: [{ role: "user", content: `Generate SEO-optimized alt text (max 125 chars) for a home decor product image. Product: "${product.title}". Return JSON: { "altText": string }` }], response_format: { type: "json_schema", json_schema: { name: "alt", strict: true, schema: { type: "object", properties: { altText: { type: "string" } }, required: ["altText"], additionalProperties: false } } }, maxTokens: 300 });
               const raw = resp.choices[0].message.content;
               const { altText } = JSON.parse(typeof raw === "string" ? raw : JSON.stringify(raw));
               if (input.autoPublish) await client.updateProduct(String(product.id), { images: product.images.map((img, idx) => idx === 0 ? { src: img.src } : img) });
@@ -813,6 +815,7 @@ const blogRouter = router({
             { role: "user", content: `Suggest one specific, compelling blog post title idea for Athena's Decor (vases, candles, wall art, throw pillows, mirrors, curated accessories).${recentTitles.length ? ` Don't repeat these already-published titles: ${recentTitles.slice(0, 15).join("; ")}` : ""} Return JSON: { "topic": string }` },
           ],
           response_format: { type: "json_schema", json_schema: { name: "topic", strict: true, schema: { type: "object", properties: { topic: { type: "string" } }, required: ["topic"], additionalProperties: false } } },
+          maxTokens: 300, // single one-sentence field
         });
         const topicRaw = topicResponse.choices[0]?.message?.content;
         topic = JSON.parse(typeof topicRaw === "string" ? topicRaw : '{"topic":"home decor trends"}').topic || "home decor trends";
@@ -1958,6 +1961,7 @@ const auditRouter = router({
             { role: "user", content: `Generate a fix for this SEO issue: ${issue.description ?? issue.issueType} on page "${issue.pageTitle}". Current: "${issue.currentValue ?? "empty"}". Issue type: ${issue.issueType}. Return JSON: { "fixValue": string }. If meta_title: under 60 chars. If meta_description: under 160 chars. If alt_text: under 125 chars.` },
           ],
           response_format: { type: "json_schema", json_schema: { name: "fix_gen", strict: true, schema: { type: "object", properties: { fixValue: { type: "string" } }, required: ["fixValue"], additionalProperties: false } } },
+          maxTokens: 300, // single field, longest case is a ~160-char meta description
         });
         const raw = genResponse.choices[0]?.message?.content;
         fixValue = JSON.parse(typeof raw === "string" ? raw : "{}").fixValue ?? "";

@@ -17,6 +17,7 @@ export async function optimizeActiveCampaignBudgets(): Promise<{ optimized: numb
           { role: "user", content: `Analyze this ad campaign and recommend budget optimization:\nCampaign: ${campaign.name}\nPlatform: ${campaign.platform}\nDaily Budget: $${campaign.dailyBudget}\nROAS: ${campaign.roas}\nCTR: ${campaign.ctr}%\nCPC: $${campaign.cpc}\nImpressions: ${campaign.impressions}\nClicks: ${campaign.clicks}\nConversions: ${campaign.conversions}\n\nReturn JSON: { "recommendedDailyBudget": number, "reasoning": string, "actions": string[] }` },
         ],
         response_format: { type: "json_schema", json_schema: { name: "budget_optimization", strict: true, schema: { type: "object", properties: { recommendedDailyBudget: { type: "number" }, reasoning: { type: "string" }, actions: { type: "array", items: { type: "string" } } }, required: ["recommendedDailyBudget", "reasoning", "actions"], additionalProperties: false } } },
+        maxTokens: 600, // one number, a short reasoning sentence, a handful of short action strings
       });
       const raw = response.choices[0]?.message?.content;
       const result = JSON.parse(typeof raw === "string" ? raw : "{}");

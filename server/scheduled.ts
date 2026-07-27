@@ -404,35 +404,50 @@ export function registerScheduledRoutes(app: Router) {
       const configs = allConfigs.filter((c: any) => c.module === "email_campaigns" && c.enabled && isAutonomousConfigDue(c));
       let totalSent = 0;
       for (const config of configs) {
+        // "Nothing to send yet" is deliberately checked before the try below
+        // so it keeps re-checking every 5 minutes rather than backing off —
+        // new prospects can show up at any time and shouldn't wait a full
+        // frequencyHours cycle just because there was nothing to do earlier.
         const moduleConfig = (config.config as any) || {};
         const prospects = await getEmailProspects(config.userId);
         // Exclude "competitor_scrape" prospects — AI-generated personas, not
         // real people; their addresses aren't real and must never be emailed.
         const newProspects = prospects.filter((p: any) => !p.lastContactedAt && p.status === "active" && p.source !== "competitor_scrape").slice(0, moduleConfig.batchSize || 100);
         if (newProspects.length === 0) continue;
-        const campaignType = moduleConfig.campaignType || "promotional";
-        const subject = moduleConfig.subject || "Discover Our Latest Home Decor Collection";
-        const aiResp = await invokeLLM({ messages: [{ role: "system", content: "You are an expert email marketer for a premium home decor brand." }, { role: "user", content: `Write a compelling ${campaignType} email for a home decor store. Subject: "${subject}". Include: warm greeting, 2-3 product highlights with emotional storytelling, clear CTA button, and unsubscribe note. Return JSON: { subject, previewText, bodyHtml, bodyText }` }], response_format: { type: "json_schema", json_schema: { name: "email", strict: true, schema: { type: "object", properties: { subject: { type: "string" }, previewText: { type: "string" }, bodyHtml: { type: "string" }, bodyText: { type: "string" } }, required: ["subject","previewText","bodyHtml","bodyText"], additionalProperties: false } } } });
-        const emailContent = JSON.parse(typeof aiResp.choices[0].message.content === "string" ? aiResp.choices[0].message.content : JSON.stringify(aiResp.choices[0].message.content));
-        const campaign = await createEmailCampaign({ userId: config.userId, name: `Auto Campaign ${new Date().toLocaleDateString()}`, ...emailContent, type: campaignType as any, status: "sent", sentAt: new Date(), automationEnabled: false, frequencyDays: 30, totalSent: 0, totalDelivered: 0, totalOpened: 0, totalClicked: 0, totalBounced: 0, totalUnsubscribed: 0, abTestEnabled: false, variantBSubject: null });
-        let batchDelivered = 0;
-        for (const prospect of newProspects) {
-          const html = instrumentEmailHtml(emailContent.bodyHtml, ENV.publicBaseUrl, { campaignId: campaign.id, prospectId: prospect.id, userId: config.userId });
-          const sendResult = isEmailConfigured()
-            ? await sendEmail({ to: prospect.email, subject: emailContent.subject, html, text: emailContent.bodyText })
-            : { success: false as const, error: "RESEND_API_KEY not configured" };
-          await insertEmailEvent({ campaignId: campaign.id, prospectId: prospect.id, userId: config.userId, event: sendResult.success ? "sent" : "bounced", clickUrl: null, userAgent: null, ipAddress: null, variant: null });
-          if (sendResult.success) {
-            batchDelivered++;
-            await updateEmailProspect(prospect.id, { lastContactedAt: new Date() });
-          } else {
-            console.warn(`[AutoEmailCampaign] Failed to send to ${prospect.email}: ${sendResult.error}`);
+
+        // From here on, an invokeLLM failure must not skip
+        // upsertAutonomousConfig — see the matching comment in
+        // blog-autonomous below: otherwise the 5-minute poller retries a
+        // full LLM call forever instead of backing off to frequencyHours.
+        try {
+          const campaignType = moduleConfig.campaignType || "promotional";
+          const subject = moduleConfig.subject || "Discover Our Latest Home Decor Collection";
+          const aiResp = await invokeLLM({ messages: [{ role: "system", content: "You are an expert email marketer for a premium home decor brand." }, { role: "user", content: `Write a compelling ${campaignType} email for a home decor store. Subject: "${subject}". Include: warm greeting, 2-3 product highlights with emotional storytelling, clear CTA button, and unsubscribe note. Return JSON: { subject, previewText, bodyHtml, bodyText }` }], response_format: { type: "json_schema", json_schema: { name: "email", strict: true, schema: { type: "object", properties: { subject: { type: "string" }, previewText: { type: "string" }, bodyHtml: { type: "string" }, bodyText: { type: "string" } }, required: ["subject","previewText","bodyHtml","bodyText"], additionalProperties: false } } } });
+          const emailContent = JSON.parse(typeof aiResp.choices[0].message.content === "string" ? aiResp.choices[0].message.content : JSON.stringify(aiResp.choices[0].message.content));
+          const campaign = await createEmailCampaign({ userId: config.userId, name: `Auto Campaign ${new Date().toLocaleDateString()}`, ...emailContent, type: campaignType as any, status: "sent", sentAt: new Date(), automationEnabled: false, frequencyDays: 30, totalSent: 0, totalDelivered: 0, totalOpened: 0, totalClicked: 0, totalBounced: 0, totalUnsubscribed: 0, abTestEnabled: false, variantBSubject: null });
+          let batchDelivered = 0;
+          for (const prospect of newProspects) {
+            const html = instrumentEmailHtml(emailContent.bodyHtml, ENV.publicBaseUrl, { campaignId: campaign.id, prospectId: prospect.id, userId: config.userId });
+            const sendResult = isEmailConfigured()
+              ? await sendEmail({ to: prospect.email, subject: emailContent.subject, html, text: emailContent.bodyText })
+              : { success: false as const, error: "RESEND_API_KEY not configured" };
+            await insertEmailEvent({ campaignId: campaign.id, prospectId: prospect.id, userId: config.userId, event: sendResult.success ? "sent" : "bounced", clickUrl: null, userAgent: null, ipAddress: null, variant: null });
+            if (sendResult.success) {
+              batchDelivered++;
+              await updateEmailProspect(prospect.id, { lastContactedAt: new Date() });
+            } else {
+              console.warn(`[AutoEmailCampaign] Failed to send to ${prospect.email}: ${sendResult.error}`);
+            }
+            await sleep(150);
           }
-          await sleep(150);
+          await updateEmailCampaign(campaign.id, { totalSent: batchDelivered, totalDelivered: batchDelivered });
+          totalSent += batchDelivered;
+        } catch (err: any) {
+          console.warn(`[AutoEmailCampaign] Run failed for user ${config.userId}:`, err.message);
+          await logActivity({ module: "email_campaigns", level: "error", title: "Email campaign send failed", detail: err.message });
+        } finally {
+          await upsertAutonomousConfig(config.userId, "email_campaigns", { lastAutoRunAt: new Date(), nextAutoRunAt: new Date(Date.now() + config.frequencyHours * 3600000) });
         }
-        await updateEmailCampaign(campaign.id, { totalSent: batchDelivered, totalDelivered: batchDelivered });
-        await upsertAutonomousConfig(config.userId, "email_campaigns", { lastAutoRunAt: new Date(), nextAutoRunAt: new Date(Date.now() + config.frequencyHours * 3600000) });
-        totalSent += batchDelivered;
       }
       if (totalSent > 0) {
         await logActivity({
@@ -455,6 +470,10 @@ export function registerScheduledRoutes(app: Router) {
       const configs = allConfigs.filter((c: any) => c.module === "backlinker" && c.enabled && isAutonomousConfigDue(c));
       let totalOpportunities = 0;
       for (const config of configs) {
+        // "No active campaign yet" is checked before the try below so it
+        // keeps re-checking every 5 minutes rather than backing off — the
+        // user activating a campaign shouldn't have to wait a full
+        // frequencyHours cycle to be picked up.
         const moduleConfig = (config.config as any) || {};
         const niche = moduleConfig.niche || "home decor";
         const count = moduleConfig.discoverCount || 20;
@@ -462,15 +481,20 @@ export function registerScheduledRoutes(app: Router) {
         const activeCampaign = campaigns.find((c: any) => c.status === "active");
         if (!activeCampaign) continue;
 
-        const businessContext = await getBusinessContextForAI();
-        let opportunities: any[] = [];
+        // From here on, an invokeLLM failure must not skip
+        // upsertAutonomousConfig — see the matching comment in
+        // blog-autonomous below: otherwise the 5-minute poller retries a
+        // full LLM call forever instead of backing off to frequencyHours.
+        try {
+          const businessContext = await getBusinessContextForAI();
+          let opportunities: any[] = [];
 
-        // Real, live-searched sites when Firecrawl is configured — a
-        // fabricated site name/URL is useless for actual outreach.
-        if (isFirecrawlConfigured()) {
-          const candidates = await searchRealBacklinkCandidates(niche, count);
-          if (candidates.length > 0) {
-            const prompt = `You are an SEO backlink strategist for a "${niche}" e-commerce store.
+          // Real, live-searched sites when Firecrawl is configured — a
+          // fabricated site name/URL is useless for actual outreach.
+          if (isFirecrawlConfigured()) {
+            const candidates = await searchRealBacklinkCandidates(niche, count);
+            if (candidates.length > 0) {
+              const prompt = `You are an SEO backlink strategist for a "${niche}" e-commerce store.
 ${businessContext}
 Below are REAL websites found via live web search (same order, do not skip or reorder). For EACH one, assess its fit for a backlink.
 
@@ -478,38 +502,43 @@ Real sites found:
 ${candidates.map((c, i) => `${i + 1}. ${c.title} — ${c.url}${c.description ? ` — ${c.description}` : ""}`).join("\n")}
 
 Return JSON with exactly ${candidates.length} items in the same order, field "sites" with: pageTitle, type (news/blog/forum/directory/social/competitor), domainAuthority (1-100 estimate), relevanceScore (1-100), seoValue (high/medium/low), whyBest (1 sentence), outreachMessage (2-3 sentences).`;
-            const response = await invokeLLM({ messages: [{ role: "user", content: prompt }], response_format: { type: "json_schema", json_schema: { name: "sites", strict: true, schema: { type: "object", properties: { sites: { type: "array", items: { type: "object", properties: { pageTitle: { type: "string" }, type: { type: "string" }, domainAuthority: { type: "number" }, relevanceScore: { type: "number" }, seoValue: { type: "string" }, whyBest: { type: "string" }, outreachMessage: { type: "string" } }, required: ["pageTitle","type","domainAuthority","relevanceScore","seoValue","whyBest","outreachMessage"], additionalProperties: false } } }, required: ["sites"], additionalProperties: false } } } });
+              const response = await invokeLLM({ messages: [{ role: "user", content: prompt }], response_format: { type: "json_schema", json_schema: { name: "sites", strict: true, schema: { type: "object", properties: { sites: { type: "array", items: { type: "object", properties: { pageTitle: { type: "string" }, type: { type: "string" }, domainAuthority: { type: "number" }, relevanceScore: { type: "number" }, seoValue: { type: "string" }, whyBest: { type: "string" }, outreachMessage: { type: "string" } }, required: ["pageTitle","type","domainAuthority","relevanceScore","seoValue","whyBest","outreachMessage"], additionalProperties: false } } }, required: ["sites"], additionalProperties: false } } } });
+              const raw = response.choices[0].message.content;
+              const parsed = JSON.parse(typeof raw === "string" ? raw : JSON.stringify(raw));
+              const assessments = (parsed.sites || []) as any[];
+              opportunities = candidates.map((c, i) => {
+                const a = assessments[i] || {};
+                return {
+                  campaignId: activeCampaign.id, userId: config.userId, status: "new" as const,
+                  siteName: c.title, siteUrl: c.url, pageUrl: c.url,
+                  pageTitle: a.pageTitle || c.title, type: a.type || "blog",
+                  domainAuthority: typeof a.domainAuthority === "number" ? a.domainAuthority : 0,
+                  relevanceScore: typeof a.relevanceScore === "number" ? a.relevanceScore : 50,
+                  seoValue: a.seoValue || "medium",
+                  isVerified: true, outreachEmail: null, outreachMessage: a.outreachMessage || "",
+                  notes: `Found via live web search — a real, reachable site. Still verify a real contact/editor email before outreach. ${a.whyBest ?? ""}`.trim(),
+                };
+              });
+            }
+          }
+
+          // Fallback: no Firecrawl configured, or search returned nothing usable.
+          if (opportunities.length === 0) {
+            const prompt = `Identify ${count} best websites for backlinks for a "${niche}" e-commerce store. ${businessContext}\nYou have no live web access, so these are unverified candidates. Return JSON with field "sites" containing array of: siteName, siteUrl, pageUrl, pageTitle, type (news/blog/forum/directory/social), domainAuthority (1-100), relevanceScore (1-100), seoValue (high/medium/low), outreachEmail, outreachMessage, whyBest.`;
+            const response = await invokeLLM({ messages: [{ role: "user", content: prompt }], response_format: { type: "json_schema", json_schema: { name: "sites", strict: true, schema: { type: "object", properties: { sites: { type: "array", items: { type: "object", properties: { siteName: { type: "string" }, siteUrl: { type: "string" }, pageUrl: { type: "string" }, pageTitle: { type: "string" }, type: { type: "string" }, domainAuthority: { type: "number" }, relevanceScore: { type: "number" }, seoValue: { type: "string" }, outreachEmail: { type: "string" }, outreachMessage: { type: "string" }, whyBest: { type: "string" } }, required: ["siteName","siteUrl","pageUrl","pageTitle","type","domainAuthority","relevanceScore","seoValue","outreachEmail","outreachMessage","whyBest"], additionalProperties: false } } }, required: ["sites"], additionalProperties: false } } } });
             const raw = response.choices[0].message.content;
             const parsed = JSON.parse(typeof raw === "string" ? raw : JSON.stringify(raw));
-            const assessments = (parsed.sites || []) as any[];
-            opportunities = candidates.map((c, i) => {
-              const a = assessments[i] || {};
-              return {
-                campaignId: activeCampaign.id, userId: config.userId, status: "new" as const,
-                siteName: c.title, siteUrl: c.url, pageUrl: c.url,
-                pageTitle: a.pageTitle || c.title, type: a.type || "blog",
-                domainAuthority: typeof a.domainAuthority === "number" ? a.domainAuthority : 0,
-                relevanceScore: typeof a.relevanceScore === "number" ? a.relevanceScore : 50,
-                seoValue: a.seoValue || "medium",
-                isVerified: true, outreachEmail: null, outreachMessage: a.outreachMessage || "",
-                notes: `Found via live web search — a real, reachable site. Still verify a real contact/editor email before outreach. ${a.whyBest ?? ""}`.trim(),
-              };
-            });
+            opportunities = (parsed.sites || []).map((s: any) => ({ ...s, campaignId: activeCampaign.id, userId: config.userId, status: "new" as const, isVerified: false, outreachEmail: null, notes: `AI-suggested target, not verified — confirm it's real before reaching out. ${s.whyBest ?? ""}`.trim() }));
           }
-        }
 
-        // Fallback: no Firecrawl configured, or search returned nothing usable.
-        if (opportunities.length === 0) {
-          const prompt = `Identify ${count} best websites for backlinks for a "${niche}" e-commerce store. ${businessContext}\nYou have no live web access, so these are unverified candidates. Return JSON with field "sites" containing array of: siteName, siteUrl, pageUrl, pageTitle, type (news/blog/forum/directory/social), domainAuthority (1-100), relevanceScore (1-100), seoValue (high/medium/low), outreachEmail, outreachMessage, whyBest.`;
-          const response = await invokeLLM({ messages: [{ role: "user", content: prompt }], response_format: { type: "json_schema", json_schema: { name: "sites", strict: true, schema: { type: "object", properties: { sites: { type: "array", items: { type: "object", properties: { siteName: { type: "string" }, siteUrl: { type: "string" }, pageUrl: { type: "string" }, pageTitle: { type: "string" }, type: { type: "string" }, domainAuthority: { type: "number" }, relevanceScore: { type: "number" }, seoValue: { type: "string" }, outreachEmail: { type: "string" }, outreachMessage: { type: "string" }, whyBest: { type: "string" } }, required: ["siteName","siteUrl","pageUrl","pageTitle","type","domainAuthority","relevanceScore","seoValue","outreachEmail","outreachMessage","whyBest"], additionalProperties: false } } }, required: ["sites"], additionalProperties: false } } } });
-          const raw = response.choices[0].message.content;
-          const parsed = JSON.parse(typeof raw === "string" ? raw : JSON.stringify(raw));
-          opportunities = (parsed.sites || []).map((s: any) => ({ ...s, campaignId: activeCampaign.id, userId: config.userId, status: "new" as const, isVerified: false, outreachEmail: null, notes: `AI-suggested target, not verified — confirm it's real before reaching out. ${s.whyBest ?? ""}`.trim() }));
+          if (opportunities.length > 0) await insertBacklinkOpportunities(opportunities);
+          totalOpportunities += opportunities.length;
+        } catch (err: any) {
+          console.warn(`[AutoBacklinker] Run failed for user ${config.userId}:`, err.message);
+          await logActivity({ module: "backlinker", level: "error", title: "Backlinker run failed", detail: err.message });
+        } finally {
+          await upsertAutonomousConfig(config.userId, "backlinker", { lastAutoRunAt: new Date(), nextAutoRunAt: new Date(Date.now() + config.frequencyHours * 3600000) });
         }
-
-        if (opportunities.length > 0) await insertBacklinkOpportunities(opportunities);
-        await upsertAutonomousConfig(config.userId, "backlinker", { lastAutoRunAt: new Date(), nextAutoRunAt: new Date(Date.now() + config.frequencyHours * 3600000) });
-        totalOpportunities += opportunities.length;
       }
       if (totalOpportunities > 0) {
         await logActivity({
@@ -592,35 +621,51 @@ Return JSON with exactly ${candidates.length} items in the same order, field "si
       const configs = allConfigs.filter((c: any) => c.module === "blog" && c.enabled && isAutonomousConfigDue(c));
       let totalPosts = 0;
       for (const config of configs) {
-        const moduleConfig = (config.config as any) || {};
-        const keywords: string[] = moduleConfig.keywords || ["home decor ideas", "interior design tips", "affordable furniture"];
-        const keyword = keywords[Math.floor(Math.random() * keywords.length)];
-        const autoPublish: boolean = moduleConfig.autoPublish !== false;
-        const prompt = `Write a complete SEO-optimized blog post about "${keyword}" for a home decor e-commerce store. Include emotional storytelling, product recommendations, and internal linking opportunities. Return JSON: { title, slug, seoTitle (max 60 chars), seoDescription (max 160 chars), content (HTML), tags (array of strings), excerpt, imagePrompt }`;
-        const response = await invokeLLM({ messages: [{ role: "system", content: "You are an expert content marketer for a premium home decor brand." }, { role: "user", content: prompt }], response_format: { type: "json_schema", json_schema: { name: "post", strict: true, schema: { type: "object", properties: { title: { type: "string" }, slug: { type: "string" }, seoTitle: { type: "string" }, seoDescription: { type: "string" }, content: { type: "string" }, tags: { type: "array", items: { type: "string" } }, excerpt: { type: "string" }, imagePrompt: { type: "string" } }, required: ["title","slug","seoTitle","seoDescription","content","tags","excerpt","imagePrompt"], additionalProperties: false } } } });
-        const raw = response.choices[0].message.content;
-        const post = JSON.parse(typeof raw === "string" ? raw : JSON.stringify(raw));
-        let featuredImageUrl: string | undefined;
-        let featuredImageAlt: string | undefined;
+        // Everything below (the invokeLLM call especially) must not be able
+        // to skip the upsertAutonomousConfig call at the bottom — this route
+        // is polled every 5 minutes, and isAutonomousConfigDue() only looks
+        // at lastAutoRunAt. Previously a thrown error (e.g. LLM credit
+        // balance, a transient network failure) jumped straight past the
+        // upsert to the outer catch, so lastAutoRunAt never advanced and the
+        // next poll saw the config as still due — a persistent failure meant
+        // a full blog-generation LLM call fired again every 5 minutes,
+        // forever, instead of backing off to frequencyHours like every other
+        // autonomous module already does.
         try {
-          const img = await generateImage({ prompt: `${post.imagePrompt}, elegant home decor photography, soft natural lighting, branded lifestyle shot` });
-          if (img.url) {
-            const imgRes = await fetch(img.url);
-            const buf = Buffer.from(await imgRes.arrayBuffer());
-            const stored = await storagePut(`blog-images/${Date.now()}-auto.jpg`, buf, "image/jpeg");
-            featuredImageUrl = stored.url;
-            featuredImageAlt = `${post.title} - Home Decor`;
-          }
-        } catch {}
-        const publishResult = await createAndPublishBlogPost({ title: post.title, slug: post.slug, content: post.content, excerpt: post.excerpt, seoTitle: post.seoTitle, seoDescription: post.seoDescription, tags: post.tags, featuredImageUrl, featuredImageAlt }, autoPublish);
-        await upsertAutonomousConfig(config.userId, "blog", { lastAutoRunAt: new Date(), nextAutoRunAt: new Date(Date.now() + config.frequencyHours * 3600000) });
-        await logActivity({
-          module: "blog", level: "success",
-          title: `${publishResult.published ? "Published" : "Drafted"} blog post: "${post.title}"`,
-          detail: post.excerpt ?? "",
-          metadata: { title: post.title, tags: post.tags },
-        });
-        totalPosts++;
+          const moduleConfig = (config.config as any) || {};
+          const keywords: string[] = moduleConfig.keywords || ["home decor ideas", "interior design tips", "affordable furniture"];
+          const keyword = keywords[Math.floor(Math.random() * keywords.length)];
+          const autoPublish: boolean = moduleConfig.autoPublish !== false;
+          const prompt = `Write a complete SEO-optimized blog post about "${keyword}" for a home decor e-commerce store. Include emotional storytelling, product recommendations, and internal linking opportunities. Return JSON: { title, slug, seoTitle (max 60 chars), seoDescription (max 160 chars), content (HTML), tags (array of strings), excerpt, imagePrompt }`;
+          const response = await invokeLLM({ messages: [{ role: "system", content: "You are an expert content marketer for a premium home decor brand." }, { role: "user", content: prompt }], response_format: { type: "json_schema", json_schema: { name: "post", strict: true, schema: { type: "object", properties: { title: { type: "string" }, slug: { type: "string" }, seoTitle: { type: "string" }, seoDescription: { type: "string" }, content: { type: "string" }, tags: { type: "array", items: { type: "string" } }, excerpt: { type: "string" }, imagePrompt: { type: "string" } }, required: ["title","slug","seoTitle","seoDescription","content","tags","excerpt","imagePrompt"], additionalProperties: false } } } });
+          const raw = response.choices[0].message.content;
+          const post = JSON.parse(typeof raw === "string" ? raw : JSON.stringify(raw));
+          let featuredImageUrl: string | undefined;
+          let featuredImageAlt: string | undefined;
+          try {
+            const img = await generateImage({ prompt: `${post.imagePrompt}, elegant home decor photography, soft natural lighting, branded lifestyle shot` });
+            if (img.url) {
+              const imgRes = await fetch(img.url);
+              const buf = Buffer.from(await imgRes.arrayBuffer());
+              const stored = await storagePut(`blog-images/${Date.now()}-auto.jpg`, buf, "image/jpeg");
+              featuredImageUrl = stored.url;
+              featuredImageAlt = `${post.title} - Home Decor`;
+            }
+          } catch {}
+          const publishResult = await createAndPublishBlogPost({ title: post.title, slug: post.slug, content: post.content, excerpt: post.excerpt, seoTitle: post.seoTitle, seoDescription: post.seoDescription, tags: post.tags, featuredImageUrl, featuredImageAlt }, autoPublish);
+          await logActivity({
+            module: "blog", level: "success",
+            title: `${publishResult.published ? "Published" : "Drafted"} blog post: "${post.title}"`,
+            detail: post.excerpt ?? "",
+            metadata: { title: post.title, tags: post.tags },
+          });
+          totalPosts++;
+        } catch (err: any) {
+          console.warn(`[AutoBlog] Run failed for user ${config.userId}:`, err.message);
+          await logActivity({ module: "blog", level: "error", title: "Autonomous blog generation failed", detail: err.message });
+        } finally {
+          await upsertAutonomousConfig(config.userId, "blog", { lastAutoRunAt: new Date(), nextAutoRunAt: new Date(Date.now() + config.frequencyHours * 3600000) });
+        }
       }
       res.json({ success: true, totalPosts });
     } catch (err: any) {
