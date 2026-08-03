@@ -5,7 +5,7 @@ import { publicProcedure, protectedProcedure, router } from "./_core/trpc";
 import { z } from "zod";
 import { TRPCError } from "@trpc/server";
 import { encryptCredentials, decryptCredentials, maskCredential, encryptCredential } from "./crypto";
-import { invokeLLM } from "./_core/llm";
+import { invokeLLM, LLM_MAX_TOKENS } from "./_core/llm";
 import { generateImage } from "./_core/imageGeneration";
 import { sendEmail, isEmailConfigured } from "./_core/email";
 import { instrumentEmailHtml } from "./emailTracking";
@@ -378,6 +378,7 @@ const seoRouter = router({
       const jobId = await createSeoJob({ type: "keyword_research", status: "running", startedAt: new Date() });
       try {
         const response = await invokeLLM({
+          maxTokens: LLM_MAX_TOKENS.list,
           messages: [
             { role: "system", content: "You are an expert SEO strategist for e-commerce. Return structured JSON only." },
             {
@@ -447,6 +448,7 @@ Return JSON: { "keywords": [{ "keyword": string, "searchVolume": number, "diffic
       const jobId = await createSeoJob({ type: "product_optimize", status: "running", startedAt: new Date() });
       try {
         const response = await invokeLLM({
+          maxTokens: LLM_MAX_TOKENS.medium,
           messages: [
             { role: "system", content: "You are an expert Shopify SEO copywriter for Athena's Decor, a premium home decor brand. Return structured JSON only." },
             {
@@ -568,6 +570,7 @@ Return JSON: { "optimizedTitle": string, "optimizedDescription": string, "metaTi
     try {
       const config = await getShopifyConfig();
       const response = await invokeLLM({
+        maxTokens: LLM_MAX_TOKENS.list,
         messages: [
           { role: "system", content: "You are an expert SEO auditor for Shopify dropshipping stores. Return structured JSON only." },
           {
@@ -689,6 +692,7 @@ async function processBulkOptimizationJob(jobId: number, storeDomain: string, ac
       await updateQueueItem(item.id, { status: "processing" });
       try {
         const response = await invokeLLM({
+          maxTokens: LLM_MAX_TOKENS.medium,
           messages: [
             { role: "system", content: "You are an expert Shopify SEO copywriter for Athena's Decor, a premium home decor brand. Return structured JSON only. Be concise and accurate with character limits." },
             {
@@ -774,6 +778,7 @@ const blogRouter = router({
     const recentPosts = await getBlogPosts(15);
     const recentTitles = recentPosts.map(p => p.title).filter(Boolean);
     const response = await invokeLLM({
+      maxTokens: LLM_MAX_TOKENS.small,
       messages: [
         { role: "system", content: "You are a content strategist for a premium home decor e-commerce brand. Return structured JSON only." },
         {
@@ -1071,6 +1076,7 @@ const sourcingRouter = router({
         if (input.autoOptimize) {
           try {
             const optResponse = await invokeLLM({
+              maxTokens: LLM_MAX_TOKENS.medium,
               messages: [
                 { role: "system", content: "You are an expert Shopify SEO copywriter for Athena's Decor. Optimize product content for search engines and conversions. Return only JSON." },
                 { role: "user", content: `Optimize this dropshipping product for Shopify:\nTitle: ${title}\nDescription: ${description}\nReturn JSON: { "title": string (max 80 chars), "description": string (HTML, 150-300 words), "metaTitle": string (max 60 chars), "metaDescription": string (max 160 chars), "tags": string[] }` },
@@ -1160,6 +1166,7 @@ const sourcingRouter = router({
           if (input.autoOptimize) {
             try {
               const optResponse = await invokeLLM({
+                maxTokens: LLM_MAX_TOKENS.medium,
                 messages: [
                   { role: "system", content: "You are an expert Shopify SEO copywriter for Athena's Decor. Return only JSON." },
                   { role: "user", content: `Optimize for Shopify:\nTitle: ${title}\nDescription: ${description}\nReturn JSON: { "title": string (max 80 chars), "description": string (HTML), "metaTitle": string (max 60 chars), "metaDescription": string (max 160 chars), "tags": string[] }` },
@@ -1415,6 +1422,7 @@ Return JSON: { "suggestions": [{ "name": string (short, e.g. "Boho Wall Art"), "
 
     try {
       const response = await invokeLLM({
+        maxTokens: LLM_MAX_TOKENS.medium,
         messages: [
           { role: "system", content: "You are an expert dropshipping product researcher. Return only JSON." },
           { role: "user", content: prompt },
@@ -1704,6 +1712,7 @@ const adsRouter = router({
     .mutation(async ({ input }) => {
       // Generate ad copy
       const copyResponse = await invokeLLM({
+        maxTokens: LLM_MAX_TOKENS.small,
         messages: [
           { role: "system", content: "You are an expert performance marketing copywriter. Return structured JSON only." },
           {
@@ -1856,6 +1865,7 @@ Return JSON: { "headline": string (max 40 chars), "bodyText": string (max 125 ch
       if (!campaign) throw new TRPCError({ code: "NOT_FOUND" });
 
       const response = await invokeLLM({
+        maxTokens: LLM_MAX_TOKENS.small,
         messages: [
           { role: "system", content: "You are a performance marketing optimization expert. Return structured JSON only." },
           {
@@ -2190,6 +2200,7 @@ ACTIONS YOU CAN EXECUTE (tell the user what you're doing and confirm before exec
 Be concise, direct, and action-oriented. When the user asks you to do something, confirm what you're about to do and provide the result. Format responses in markdown.`;
 
       const response = await invokeLLM({
+        maxTokens: LLM_MAX_TOKENS.chat,
         messages: [
           { role: "system", content: storeContext },
           ...input.messages,
@@ -2267,6 +2278,7 @@ Be concise, direct, and action-oriented. When the user asks you to do something,
           const topic = input.params?.topic || "home decor";
           try {
             const response = await invokeLLM({
+              maxTokens: LLM_MAX_TOKENS.list,
               messages: [
                 { role: "system", content: "You are an SEO expert for home decor e-commerce. Return JSON only." },
                 { role: "user", content: `Generate 15 trending SEO keywords related to "${topic}" for a home decor dropshipping store. Return JSON: { "keywords": [{ "keyword": string, "searchVolume": number, "difficulty": number, "cpc": number, "trend": "up"|"down"|"stable", "category": string }] }` },
@@ -2973,6 +2985,7 @@ Return JSON with exactly ${candidates.length} items in the same order, fields: p
           let assessments: any[] = [];
           try {
             const response = await invokeLLM({
+              maxTokens: LLM_MAX_TOKENS.list,
               messages: [{ role: "user", content: prompt }],
               response_format: { type: "json_schema", json_schema: {
                 name: "backlink_assessments",
@@ -3056,6 +3069,7 @@ Return JSON: { "opportunities": [...] } with fields: siteName, siteUrl, pageUrl,
         let parsed: any;
         try {
           const response = await invokeLLM({
+            maxTokens: LLM_MAX_TOKENS.list,
             messages: [{ role: "user", content: prompt }],
             response_format: { type: "json_schema", json_schema: {
               name: "backlink_opportunities",
@@ -3234,6 +3248,7 @@ Return JSON with exactly ${candidates.length} items in the same order, field "si
           let assessments: any[] = [];
           try {
             const response = await invokeLLM({
+              maxTokens: LLM_MAX_TOKENS.list,
               messages: [{ role: "user", content: prompt }],
               response_format: { type: "json_schema", json_schema: {
                 name: "best_sites_assessments",
@@ -3325,6 +3340,7 @@ Return as JSON with field "sites" containing the array.`;
       let parsed: any;
       try {
         const response = await invokeLLM({
+          maxTokens: LLM_MAX_TOKENS.list,
           messages: [{ role: "user", content: prompt }],
           response_format: { type: "json_schema", json_schema: {
             name: "best_sites",
@@ -3493,6 +3509,7 @@ Return JSON with:
 - bodyText: plain text version`;
 
       const response = await invokeLLM({
+        maxTokens: LLM_MAX_TOKENS.list,
         messages: [{ role: "user", content: prompt }],
         response_format: { type: "json_schema", json_schema: {
           name: "email_content",
@@ -3699,6 +3716,7 @@ For each prospect provide:
 Return as JSON array.`;
 
       const response = await invokeLLM({
+        maxTokens: LLM_MAX_TOKENS.list,
         messages: [{ role: "user", content: prompt }],
         response_format: { type: "json_schema", json_schema: {
           name: "prospects",
@@ -4054,7 +4072,7 @@ const autonomousRouter = router({
             completedAt: null,
           });
           const prompt = `Generate ${countPerDomain} realistic prospect profiles for customers of "${domain}" (home decor competitor). Return JSON with field "prospects" containing array of: email, firstName, lastName, company, website, tags (comma-separated interests), score (1-100).`;
-          const response = await invokeLLM({ messages: [{ role: "user", content: prompt }], response_format: { type: "json_schema", json_schema: { name: "prospects", strict: true, schema: { type: "object", properties: { prospects: { type: "array", items: { type: "object", properties: { email: { type: "string" }, firstName: { type: "string" }, lastName: { type: "string" }, company: { type: "string" }, website: { type: "string" }, tags: { type: "string" }, score: { type: "number" } }, required: ["email","firstName","lastName","company","website","tags","score"], additionalProperties: false } } }, required: ["prospects"], additionalProperties: false } } } });
+          const response = await invokeLLM({ messages: [{ role: "user", content: prompt }], response_format: { type: "json_schema", json_schema: { name: "prospects", strict: true, schema: { type: "object", properties: { prospects: { type: "array", items: { type: "object", properties: { email: { type: "string" }, firstName: { type: "string" }, lastName: { type: "string" }, company: { type: "string" }, website: { type: "string" }, tags: { type: "string" }, score: { type: "number" } }, required: ["email","firstName","lastName","company","website","tags","score"], additionalProperties: false } } }, required: ["prospects"], additionalProperties: false } } }, maxTokens: LLM_MAX_TOKENS.list });
           const raw = response.choices[0].message.content;
           const parsed = JSON.parse(typeof raw === "string" ? raw : JSON.stringify(raw));
           const items = (parsed.prospects || []).map((p: any) => ({ ...p, userId: ctx.user.id, source: "competitor_scrape" as const, sourceDetail: domain, status: "active" as const }));
@@ -4076,7 +4094,7 @@ const autonomousRouter = router({
         if (newProspects.length === 0) return { success: true, message: "No new prospects to contact." };
         const campaignType = moduleConfig.campaignType || "promotional";
         const subject = moduleConfig.subject || "Discover Our Latest Home Decor Collection";
-        const aiResp = await invokeLLM({ messages: [{ role: "system", content: "You are an expert email marketer for a premium home decor brand." }, { role: "user", content: `Write a compelling ${campaignType} email for a home decor store. Subject: "${subject}". Include: warm greeting, 2-3 product highlights with emotional storytelling, clear CTA button, and unsubscribe note. Return JSON: { subject, previewText, bodyHtml, bodyText }` }], response_format: { type: "json_schema", json_schema: { name: "email", strict: true, schema: { type: "object", properties: { subject: { type: "string" }, previewText: { type: "string" }, bodyHtml: { type: "string" }, bodyText: { type: "string" } }, required: ["subject","previewText","bodyHtml","bodyText"], additionalProperties: false } } } });
+        const aiResp = await invokeLLM({ messages: [{ role: "system", content: "You are an expert email marketer for a premium home decor brand." }, { role: "user", content: `Write a compelling ${campaignType} email for a home decor store. Subject: "${subject}". Include: warm greeting, 2-3 product highlights with emotional storytelling, clear CTA button, and unsubscribe note. Return JSON: { subject, previewText, bodyHtml, bodyText }` }], response_format: { type: "json_schema", json_schema: { name: "email", strict: true, schema: { type: "object", properties: { subject: { type: "string" }, previewText: { type: "string" }, bodyHtml: { type: "string" }, bodyText: { type: "string" } }, required: ["subject","previewText","bodyHtml","bodyText"], additionalProperties: false } } }, maxTokens: LLM_MAX_TOKENS.list });
         const emailContent = JSON.parse(typeof aiResp.choices[0].message.content === "string" ? aiResp.choices[0].message.content : JSON.stringify(aiResp.choices[0].message.content));
         const campaign = await createEmailCampaign({ userId: ctx.user.id, name: `Auto Campaign ${new Date().toLocaleDateString()}`, ...emailContent, type: campaignType as any, status: "sent", sentAt: new Date(), automationEnabled: false, frequencyDays: 30, totalSent: 0, totalDelivered: 0, totalOpened: 0, totalClicked: 0, totalBounced: 0, totalUnsubscribed: 0, abTestEnabled: false, variantBSubject: null });
         let delivered = 0;
@@ -4109,7 +4127,7 @@ const autonomousRouter = router({
         const niche = moduleConfig.niche || "home decor";
         const count = moduleConfig.discoverCount || 20;
         const prompt = `Identify ${count} best websites for backlinks for a "${niche}" e-commerce store. Return JSON with field "sites" containing array of: siteName, siteUrl, pageUrl, pageTitle, type (news/blog/forum/directory/social), domainAuthority (1-100), relevanceScore (1-100), seoValue (high/medium/low), outreachEmail, outreachMessage, whyBest.`;
-        const response = await invokeLLM({ messages: [{ role: "user", content: prompt }], response_format: { type: "json_schema", json_schema: { name: "sites", strict: true, schema: { type: "object", properties: { sites: { type: "array", items: { type: "object", properties: { siteName: { type: "string" }, siteUrl: { type: "string" }, pageUrl: { type: "string" }, pageTitle: { type: "string" }, type: { type: "string" }, domainAuthority: { type: "number" }, relevanceScore: { type: "number" }, seoValue: { type: "string" }, outreachEmail: { type: "string" }, outreachMessage: { type: "string" }, whyBest: { type: "string" } }, required: ["siteName","siteUrl","pageUrl","pageTitle","type","domainAuthority","relevanceScore","seoValue","outreachEmail","outreachMessage","whyBest"], additionalProperties: false } } }, required: ["sites"], additionalProperties: false } } } });
+        const response = await invokeLLM({ messages: [{ role: "user", content: prompt }], response_format: { type: "json_schema", json_schema: { name: "sites", strict: true, schema: { type: "object", properties: { sites: { type: "array", items: { type: "object", properties: { siteName: { type: "string" }, siteUrl: { type: "string" }, pageUrl: { type: "string" }, pageTitle: { type: "string" }, type: { type: "string" }, domainAuthority: { type: "number" }, relevanceScore: { type: "number" }, seoValue: { type: "string" }, outreachEmail: { type: "string" }, outreachMessage: { type: "string" }, whyBest: { type: "string" } }, required: ["siteName","siteUrl","pageUrl","pageTitle","type","domainAuthority","relevanceScore","seoValue","outreachEmail","outreachMessage","whyBest"], additionalProperties: false } } }, required: ["sites"], additionalProperties: false } } }, maxTokens: LLM_MAX_TOKENS.list });
         const raw = response.choices[0].message.content;
         const parsed = JSON.parse(typeof raw === "string" ? raw : JSON.stringify(raw));
         await upsertAutonomousConfig(ctx.user.id, "backlinker", { lastAutoRunAt: new Date() });
@@ -4140,7 +4158,7 @@ const autonomousRouter = router({
             if (input.module === "seo") {
         // Auto-run keyword research and optimize top products
         const config = await getShopifyConfig();
-        const keywordResponse = await invokeLLM({ messages: [{ role: "system", content: "You are an SEO expert for home decor e-commerce. Return JSON only." }, { role: "user", content: `Generate 20 trending SEO keywords for a home decor dropshipping store. Return JSON: { "keywords": [{ "keyword": string, "searchVolume": number, "difficulty": number, "cpc": number, "trend": "up"|"down"|"stable", "category": string }] }` }], response_format: { type: "json_schema", json_schema: { name: "keywords", strict: true, schema: { type: "object", properties: { keywords: { type: "array", items: { type: "object", properties: { keyword: { type: "string" }, searchVolume: { type: "number" }, difficulty: { type: "number" }, cpc: { type: "number" }, trend: { type: "string" }, category: { type: "string" } }, required: ["keyword","searchVolume","difficulty","cpc","trend","category"], additionalProperties: false } } }, required: ["keywords"], additionalProperties: false } } } });
+        const keywordResponse = await invokeLLM({ messages: [{ role: "system", content: "You are an SEO expert for home decor e-commerce. Return JSON only." }, { role: "user", content: `Generate 20 trending SEO keywords for a home decor dropshipping store. Return JSON: { "keywords": [{ "keyword": string, "searchVolume": number, "difficulty": number, "cpc": number, "trend": "up"|"down"|"stable", "category": string }] }` }], response_format: { type: "json_schema", json_schema: { name: "keywords", strict: true, schema: { type: "object", properties: { keywords: { type: "array", items: { type: "object", properties: { keyword: { type: "string" }, searchVolume: { type: "number" }, difficulty: { type: "number" }, cpc: { type: "number" }, trend: { type: "string" }, category: { type: "string" } }, required: ["keyword","searchVolume","difficulty","cpc","trend","category"], additionalProperties: false } } }, required: ["keywords"], additionalProperties: false } } }, maxTokens: LLM_MAX_TOKENS.list });
         const kRaw = keywordResponse.choices[0].message.content;
         const kParsed = JSON.parse(typeof kRaw === "string" ? kRaw : JSON.stringify(kRaw));
         await insertSeoKeywords((kParsed.keywords || []).map((k: any) => ({ ...k, source: "auto" })));
@@ -4151,7 +4169,7 @@ const autonomousRouter = router({
         // Auto-run a full site audit
         const config = await getShopifyConfig();
         const runId = await createAuditRun({ status: "running" });
-        const auditResponse = await invokeLLM({ messages: [{ role: "system", content: "You are an SEO and CRO auditor for e-commerce stores. Return JSON only." }, { role: "user", content: `Perform a comprehensive site audit for a home decor Shopify store. Return JSON: { "issues": [{ "type": string, "category": "auto_fixable"|"manual", "severity": "critical"|"warning"|"info", "description": string, "recommendation": string, "affectedUrl": string }], "score": number }` }], response_format: { type: "json_schema", json_schema: { name: "audit", strict: true, schema: { type: "object", properties: { issues: { type: "array", items: { type: "object", properties: { type: { type: "string" }, category: { type: "string" }, severity: { type: "string" }, description: { type: "string" }, recommendation: { type: "string" }, affectedUrl: { type: "string" } }, required: ["type","category","severity","description","recommendation","affectedUrl"], additionalProperties: false } }, score: { type: "number" } }, required: ["issues","score"], additionalProperties: false } } } });
+        const auditResponse = await invokeLLM({ messages: [{ role: "system", content: "You are an SEO and CRO auditor for e-commerce stores. Return JSON only." }, { role: "user", content: `Perform a comprehensive site audit for a home decor Shopify store. Return JSON: { "issues": [{ "type": string, "category": "auto_fixable"|"manual", "severity": "critical"|"warning"|"info", "description": string, "recommendation": string, "affectedUrl": string }], "score": number }` }], response_format: { type: "json_schema", json_schema: { name: "audit", strict: true, schema: { type: "object", properties: { issues: { type: "array", items: { type: "object", properties: { type: { type: "string" }, category: { type: "string" }, severity: { type: "string" }, description: { type: "string" }, recommendation: { type: "string" }, affectedUrl: { type: "string" } }, required: ["type","category","severity","description","recommendation","affectedUrl"], additionalProperties: false } }, score: { type: "number" } }, required: ["issues","score"], additionalProperties: false } } }, maxTokens: LLM_MAX_TOKENS.list });
         const aRaw = auditResponse.choices[0].message.content;
         const aParsed = JSON.parse(typeof aRaw === "string" ? aRaw : JSON.stringify(aRaw));
         const issues = (aParsed.issues || []).map((i: any) => ({ runId, issueType: i.type, category: i.category === "auto_fixable" ? "auto_fixable" : "manual", severity: ["critical","warning","info"].includes(i.severity) ? i.severity : "info", description: i.description, recommendation: i.recommendation, affectedUrl: i.affectedUrl, status: "open" as const, autoFixed: false }));
@@ -4187,7 +4205,7 @@ const autonomousRouter = router({
       }
       if (input.module === "ads") {
         // Auto-generate ad creative for top products
-        const adsResponse = await invokeLLM({ messages: [{ role: "system", content: "You are a performance marketing expert for home decor e-commerce. Return JSON only." }, { role: "user", content: `Generate 3 high-converting ad creatives for a home decor store. Return JSON: { "ads": [{ "headline": string, "primaryText": string, "description": string, "callToAction": string, "platform": "facebook"|"instagram"|"google", "targetAudience": string, "estimatedRoas": number }] }` }], response_format: { type: "json_schema", json_schema: { name: "ads", strict: true, schema: { type: "object", properties: { ads: { type: "array", items: { type: "object", properties: { headline: { type: "string" }, primaryText: { type: "string" }, description: { type: "string" }, callToAction: { type: "string" }, platform: { type: "string" }, targetAudience: { type: "string" }, estimatedRoas: { type: "number" } }, required: ["headline","primaryText","description","callToAction","platform","targetAudience","estimatedRoas"], additionalProperties: false } } }, required: ["ads"], additionalProperties: false } } } });
+        const adsResponse = await invokeLLM({ messages: [{ role: "system", content: "You are a performance marketing expert for home decor e-commerce. Return JSON only." }, { role: "user", content: `Generate 3 high-converting ad creatives for a home decor store. Return JSON: { "ads": [{ "headline": string, "primaryText": string, "description": string, "callToAction": string, "platform": "facebook"|"instagram"|"google", "targetAudience": string, "estimatedRoas": number }] }` }], response_format: { type: "json_schema", json_schema: { name: "ads", strict: true, schema: { type: "object", properties: { ads: { type: "array", items: { type: "object", properties: { headline: { type: "string" }, primaryText: { type: "string" }, description: { type: "string" }, callToAction: { type: "string" }, platform: { type: "string" }, targetAudience: { type: "string" }, estimatedRoas: { type: "number" } }, required: ["headline","primaryText","description","callToAction","platform","targetAudience","estimatedRoas"], additionalProperties: false } } }, required: ["ads"], additionalProperties: false } } }, maxTokens: LLM_MAX_TOKENS.medium });
         const adRaw = adsResponse.choices[0].message.content;
         const adParsed = JSON.parse(typeof adRaw === "string" ? adRaw : JSON.stringify(adRaw));
         for (const ad of (adParsed.ads || [])) {
@@ -4208,6 +4226,7 @@ const autonomousRouter = router({
         // AI Code Assistant: scan codebase for issues and optimize
         // This is a meta-module — it reviews the app's own code quality
         const auditResponse = await invokeLLM({
+          maxTokens: LLM_MAX_TOKENS.list,
           messages: [
             { role: "system", content: "You are a senior TypeScript/React/Node.js code reviewer. Analyze the provided code summary and return a structured audit report. Return JSON only." },
             { role: "user", content: `Perform a code quality audit for a React 19 + tRPC + Express + Drizzle ORM application. The app is an e-commerce automation OS for Shopify dropshipping. Check for: 1) TypeScript type safety issues, 2) React performance anti-patterns (missing memoization, unstable references), 3) Security issues (exposed secrets, SQL injection), 4) API error handling gaps, 5) Missing loading/error states in UI, 6) Database query optimization opportunities. Return JSON: { "issues": [{ "severity": "critical"|"warning"|"info", "category": "typescript"|"performance"|"security"|"error_handling"|"ui_ux"|"database", "title": string, "description": string, "recommendation": string, "autoFixable": boolean }], "score": number, "summary": string }` },

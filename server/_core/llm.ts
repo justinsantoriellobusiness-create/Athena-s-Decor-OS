@@ -228,8 +228,38 @@ const ANTHROPIC_API_URL = ENV.anthropicBaseUrl
   ? `${ENV.anthropicBaseUrl.replace(/\/$/, "")}/v1/messages`
   : "https://api.anthropic.com/v1/messages";
 const ANTHROPIC_VERSION = "2023-06-01";
-const DEFAULT_ANTHROPIC_MODEL = "claude-sonnet-5";
+
+// Sonnet is the deliberate default rather than Opus. Every call site in this
+// app is structured extraction, short marketing copy, or JSON-shaped analysis
+// — work where the top tier costs several times more per token without
+// producing meaningfully better output. ANTHROPIC_MODEL overrides this without
+// a code change if a specific workload turns out to need a different tier.
+const DEFAULT_ANTHROPIC_MODEL = ENV.anthropicModel || "claude-sonnet-5";
+
+// Fallback ceiling for call sites that don't declare their own. This is a
+// backstop against a runaway response, not a target — prefer an explicit cap
+// from LLM_MAX_TOKENS below, sized to what the call actually returns.
 const DEFAULT_MAX_TOKENS = 4096;
+
+/**
+ * Output caps by response shape. max_tokens bounds the worst case a single
+ * call can bill, so an unbounded call is an unbounded charge if the model
+ * ever loops or pads. These are sized from each response schema's field count
+ * and stated length limits with headroom on top, not measured against
+ * production traffic — they cut the tail risk rather than the typical call.
+ */
+export const LLM_MAX_TOKENS = {
+  /** One short string: alt text, a single title, a one-line fix. */
+  micro: 300,
+  /** A handful of short fields: ad copy, a topic list, a budget rec. */
+  small: 800,
+  /** One record with a prose field: a product rewrite, a page audit. */
+  medium: 1500,
+  /** A ~20-item structured list: keywords, prospects, backlink targets. */
+  list: 2500,
+  /** Free-form assistant reply in markdown. */
+  chat: 2000,
+} as const;
 
 const useAnthropic = () => !ENV.forgeApiKey && Boolean(ENV.anthropicApiKey);
 
@@ -321,10 +351,21 @@ const invokeAnthropic = async (
     // within the 5-minute cache window reuse it at ~10% of the input-token
     // cost instead of paying full price again — valuable for repeated calls
     // that share a system prompt (e.g. the AI Assistant's multi-turn chat,
-    // or a bulk-optimize loop hitting the same prompt per item). Below
-    // Anthropic's per-model minimum cacheable length the API just ignores
-    // the marker and bills normally rather than erroring, so this is safe
-    // to apply unconditionally instead of gating it on prompt size.
+    // or a bulk-optimize loop hitting the same prompt per item).
+    //
+    // Caveat, so nobody assumes this is already paying off: Anthropic ignores
+    // cache_control below a per-model minimum (1024 tokens for Sonnet/Opus,
+    // 2048 for Haiku) and bills normally rather than erroring. Every system
+    // prompt in this app today is well under that — the largest, the AI
+    // Assistant's storeContext, is ~450 tokens — so in practice this is
+    // currently a no-op that starts paying automatically if system prompts
+    // grow past the threshold. It's applied unconditionally because it's free
+    // to leave in and gating it on size would just be dead code.
+    //
+    // Tool definitions are the other half of a cacheable prefix, but the
+    // Anthropic path never sends tools (see invokeLLM: payload.tools is built
+    // for the Forge/OpenAI shape only, and no call site in this repo passes
+    // tools), so there is nothing else to mark here.
     payload.system = [
       {
         type: "text",
