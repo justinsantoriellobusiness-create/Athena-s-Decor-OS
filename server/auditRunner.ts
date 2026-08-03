@@ -3,7 +3,7 @@
  * mutation and the autonomous `/api/scheduled/site-audit` route, so the
  * two paths can't drift out of sync.
  */
-import { invokeLLM } from "./_core/llm";
+import { invokeLLM, LLM_MAX_TOKENS } from "./_core/llm";
 import { getShopifyClient } from "./shopify";
 import { decryptCredential } from "./crypto";
 import { sleep } from "./rateLimiter";
@@ -86,6 +86,7 @@ Manual-only types (still report them): missing_alt, missing_h1, missing_schema, 
 Return JSON with seoScore (0-100), croScore (0-100), and issues array.
 For each issue: issueType (snake_case), severity (critical|warning|info), title, description, suggestion, currentValue, suggestedValue.`;
         const response = await invokeLLM({
+          maxTokens: LLM_MAX_TOKENS.medium,
           messages: [
             { role: "system", content: "You are an expert SEO and CRO auditor for Shopify dropshipping stores. Return structured JSON only. Be specific and actionable." },
             { role: "user", content: prompt },

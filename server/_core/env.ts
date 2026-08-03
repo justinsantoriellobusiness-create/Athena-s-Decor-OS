@@ -17,6 +17,11 @@ export const ENV = {
   // unset; lets ops or tests point the direct-Anthropic fallback path at a
   // proxy or local capture server instead of api.anthropic.com.
   anthropicBaseUrl: process.env.ANTHROPIC_BASE_URL ?? "",
+  // Overrides the default model for every invokeLLM() call that doesn't pass
+  // one explicitly. Lets spend be tuned from Railway → Variables without a
+  // redeploy of code — e.g. drop to claude-haiku-4-5-20251001 to cut cost
+  // further, or raise to claude-opus-5 temporarily if output quality regresses.
+  anthropicModel: process.env.ANTHROPIC_MODEL ?? "",
   ZAPIER_EMBED_ID: process.env.ZAPIER_EMBED_ID ?? "",
   ZAPIER_API_SECRET: process.env.ZAPIER_API_SECRET ?? "",
   WIX_API_KEY: process.env.WIX_API_KEY ?? "",
