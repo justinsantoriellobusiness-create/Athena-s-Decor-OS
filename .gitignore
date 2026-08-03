@@ -113,8 +113,14 @@ temp/
 client/public/__manus__/version.json
 .project-config.json
 
-# Local Claude Code settings (not source)
-.claude/
+# Local Claude Code settings (not source).
+# Shared config — settings.json, hooks, and the vendored Superpowers skills —
+# is checked in so every session in this repo picks it up automatically.
+.claude/*
+!.claude/settings.json
+!.claude/hooks/
+!.claude/skills/
+.claude/settings.local.json
 
 # npm lockfile — this repo uses pnpm-lock.yaml
 package-lock.json
