@@ -50,9 +50,11 @@ const PLATFORMS: PlatformConfig[] = [
     color: "text-yellow-500",
     category: "ecommerce",
     fields: [
-      { key: "apiKey", label: "User Access Token", placeholder: "v^1.1#i^1#p^3#...", type: "password", required: true },
+      { key: "apiKey", label: "Client ID (App ID)", placeholder: "JustinS-Athena-PRD-...", required: true },
+      { key: "apiSecret", label: "Client Secret (Cert ID)", placeholder: "PRD-xxxxxxxxxxxx", type: "password", required: true },
+      { key: "storeId", label: "Refresh Token", placeholder: "v^1.1#i^1#p^3#...", type: "password", required: true },
     ],
-    instructions: "Go to eBay Developer Portal → Application Keys → Get a User Token → Sign in to eBay → Copy the User Access Token.",
+    instructions: "eBay Developer Portal → Application Keys → copy the Production App ID (Client ID) and Cert ID (Client Secret). Then 'User Tokens' → 'Get a Token from eBay via Your Application' → consent with the sell.finances scope → copy the REFRESH token (not the short-lived user token — that one expires in hours and the sync would stop working the same day).",
     helpUrl: "https://developer.ebay.com/api-docs/static/oauth-tokens.html",
   },
   {

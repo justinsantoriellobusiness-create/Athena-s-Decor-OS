@@ -1454,3 +1454,50 @@ export async function getInventoryGroupedByProduct(): Promise<InventoryProductGr
   }
   return Array.from(groups.values()).sort((a, b) => a.title.localeCompare(b.title));
 }
+
+/**
+ * Finds or creates the eBay marketplace account and stores its Finances API
+ * credentials, so connecting eBay from the Integrations page actually wires up
+ * the transaction sync.
+ *
+ * Before this, the Integrations page validated a User Access Token and wrote it
+ * to integration_tokens, while the sync read clientId/clientSecret/refreshToken
+ * from financial_accounts.credentials — two unrelated places. Connecting eBay
+ * appeared to succeed and synced nothing.
+ *
+ * Credentials arrive already encrypted; this never encrypts or logs them.
+ */
+export async function upsertEbayFinancialAccount(
+  encryptedCredentials: Record<string, string>
+): Promise<number | undefined> {
+  const db = await getDb();
+  if (!db) return undefined;
+
+  const existing = await db
+    .select()
+    .from(financialAccounts)
+    .where(eq(financialAccounts.provider, "ebay"))
+    .limit(1);
+
+  if (existing[0]) {
+    await db
+      .update(financialAccounts)
+      .set({ credentials: encryptedCredentials, isConnected: true, updatedAt: new Date() })
+      .where(eq(financialAccounts.id, existing[0].id));
+    return existing[0].id;
+  }
+
+  await db.insert(financialAccounts).values({
+    name: "eBay",
+    provider: "ebay",
+    accountType: "marketplace",
+    credentials: encryptedCredentials,
+    isConnected: true,
+  });
+  const created = await db
+    .select({ id: financialAccounts.id })
+    .from(financialAccounts)
+    .where(eq(financialAccounts.provider, "ebay"))
+    .limit(1);
+  return created[0]?.id;
+}

@@ -69,6 +69,7 @@ import {
   getOpenAuditIssues,
   getFinancialAccounts,
   getFinancialAccountById,
+  upsertEbayFinancialAccount,
   updateFinancialAccount,
   deleteFinancialAccount,
   getTransactions,
@@ -2832,12 +2833,46 @@ const integrationsRouter = router({
             break;
           }
           case "ebay": {
-            // eBay OAuth token validation
-            const res = await fetch("https://api.ebay.com/sell/account/v1/privilege", {
-              headers: { Authorization: `Bearer ${credentials.apiKey}` },
+            // Validated by performing the real refresh-token grant the
+            // Finances sync uses, not a lookalike call. A short-lived User
+            // Access Token would pass a privilege check and then expire hours
+            // later, so this proves the credential that actually has to keep
+            // working — the refresh token — is valid right now.
+            //
+            // apiKey = Client ID, apiSecret = Client Secret, storeId =
+            // Refresh Token (reusing the shared credentials shape rather than
+            // widening it for one platform).
+            const clientId = credentials.apiKey;
+            const clientSecret = credentials.apiSecret ?? "";
+            const refreshToken = credentials.storeId ?? "";
+            if (!clientSecret || !refreshToken) {
+              valid = false;
+              errorMsg = "eBay needs Client ID, Client Secret, and a Refresh Token — the Finances API can't sync without all three.";
+              break;
+            }
+            const res = await fetch("https://api.ebay.com/identity/v1/oauth2/token", {
+              method: "POST",
+              headers: {
+                Authorization: `Basic ${Buffer.from(`${clientId}:${clientSecret}`).toString("base64")}`,
+                "Content-Type": "application/x-www-form-urlencoded",
+              },
+              body: new URLSearchParams({
+                grant_type: "refresh_token",
+                refresh_token: refreshToken,
+                scope: "https://api.ebay.com/oauth/api_scope/sell.finances",
+              }).toString(),
             });
             valid = res.ok;
-            if (!valid) errorMsg = "eBay token invalid — generate a new User Access Token from eBay Developer Portal";
+            if (!valid) {
+              errorMsg = res.status === 400 || res.status === 401
+                ? "eBay rejected these credentials — re-run the consent flow at developer.ebay.com and copy a fresh Refresh Token."
+                : `eBay returned ${res.status} while minting a token.`;
+              break;
+            }
+            // Write to the account the Finances sync actually reads.
+            await upsertEbayFinancialAccount(
+              encryptCredentials({ clientId, clientSecret, refreshToken })
+            );
             break;
           }
           case "paypal": {
