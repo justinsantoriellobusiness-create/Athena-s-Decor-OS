@@ -6,6 +6,9 @@ import { z } from "zod";
 import { TRPCError } from "@trpc/server";
 import { encryptCredentials, decryptCredentials, maskCredential, encryptCredential } from "./crypto";
 import { invokeLLM, LLM_MAX_TOKENS } from "./_core/llm";
+import {
+  getOrderRoutingConfig, saveOrderRoutingConfig, classifyOrder,
+} from "./orderRouting";
 import { generateImage } from "./_core/imageGeneration";
 import { sendEmail, isEmailConfigured } from "./_core/email";
 import { instrumentEmailHtml } from "./emailTracking";
@@ -119,7 +122,7 @@ import {
   upsertUser,
 } from "./db";
 import { runInventoryScan, computeStatus } from "./inventoryRunner";
-import { runAutoFulfillment, deriveOrderStatus } from "./fulfillmentRunner";
+import { runAutoFulfillment, deriveOrderStatus, orderTags } from "./fulfillmentRunner";
 import { getCjAccessToken, getCjBalance, getCjOrderStatus, getCjProductVariants, getCjVariantStock } from "./_core/cjDropshipping";
 import { getShopifyClient } from "./shopify";
 import { getConnectedShopifyClient } from "./shopifyHelper";
@@ -1578,6 +1581,101 @@ const inventoryRouter = router({
 // (derived from the exact tags the engine itself writes), a manual trigger,
 // and the CJ wallet balance it spends from — previously the only way to see
 // any of this was scrolling the Activity Feed.
+// Cross-brand order routing (Monthly Plug handoff). See server/orderRouting.ts.
+const orderRoutingRouter = router({
+  getConfig: protectedProcedure.query(async () => {
+    const config = await getOrderRoutingConfig();
+    // The signing secret is write-only over the wire — return whether one is
+    // set, never the value, so it can't leak back out through the UI.
+    return {
+      enabled: config.enabled,
+      webhookUrl: config.webhookUrl,
+      hasSigningSecret: config.signingSecret.length > 0,
+      rules: config.rules,
+    };
+  }),
+
+  saveConfig: protectedProcedure
+    .input(z.object({
+      enabled: z.boolean().optional(),
+      webhookUrl: z.string().url().or(z.literal("")).optional(),
+      // Omit to leave the stored secret untouched; empty string clears it.
+      signingSecret: z.string().optional(),
+      rules: z.object({
+        vendors: z.array(z.string()).optional(),
+        skuPrefixes: z.array(z.string()).optional(),
+        productIds: z.array(z.string()).optional(),
+        channels: z.array(z.string()).optional(),
+      }).optional(),
+    }))
+    .mutation(async ({ input }) => {
+      const current = await getOrderRoutingConfig();
+      // Refuse to arm routing without somewhere to send orders and a secret
+      // to sign them with — otherwise every matching order fails the handoff
+      // and gets tagged monthly-plug-failed.
+      const nextUrl = input.webhookUrl ?? current.webhookUrl;
+      const nextSecret = input.signingSecret ?? current.signingSecret;
+      const nextEnabled = input.enabled ?? current.enabled;
+      if (nextEnabled && (!nextUrl || !nextSecret)) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: "Set the Monthly Plug webhook URL and signing secret before enabling routing.",
+        });
+      }
+      const nextRules = { ...current.rules, ...(input.rules ?? {}) };
+      const hasAnyRule =
+        nextRules.vendors.length > 0 || nextRules.skuPrefixes.length > 0 || nextRules.productIds.length > 0;
+      if (nextEnabled && !hasAnyRule) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: "Add at least one vendor, SKU prefix, or product ID before enabling routing — with no rules nothing would ever match.",
+        });
+      }
+      await saveOrderRoutingConfig(input);
+      return { success: true };
+    }),
+
+  /**
+   * Dry run: classifies the live Shopify order list against the saved rules
+   * without forwarding anything. This is how you confirm the rules select the
+   * right orders before arming the handoff.
+   */
+  preview: protectedProcedure.query(async () => {
+    const config = await getShopifyConfig();
+    if (!config?.isConnected) return { connected: false as const, orders: [] };
+    const routing = await getOrderRoutingConfig();
+    const client = await getShopifyClient(config.storeDomain, decryptCredential(config.accessToken) ?? config.accessToken);
+    const { orders } = await client.getOrders(100, "any");
+
+    const classified = orders.map((o: any) => {
+      const { verdict, monthlyPlugItems, athenaItems } = classifyOrder(o, routing.rules);
+      return {
+        id: String(o.id),
+        orderNumber: o.order_number,
+        channel: o.source_name ?? null,
+        createdAt: o.created_at ?? null,
+        totalPrice: o.total_price ?? null,
+        verdict,
+        monthlyPlugItemCount: monthlyPlugItems.length,
+        athenaItemCount: athenaItems.length,
+        tags: orderTags(o),
+      };
+    });
+
+    // Counts computed here in Node rather than in the client, so the UI just
+    // renders numbers it was handed.
+    const counts = classified.reduce(
+      (acc: Record<string, number>, o: { verdict: string }) => {
+        acc[o.verdict] = (acc[o.verdict] ?? 0) + 1;
+        return acc;
+      },
+      {} as Record<string, number>
+    );
+
+    return { connected: true as const, enabled: routing.enabled, counts, orders: classified };
+  }),
+});
+
 const fulfillmentRouter = router({
   getOrders: protectedProcedure.query(async () => {
     const config = await getShopifyConfig();
@@ -4448,6 +4546,7 @@ export const appRouter = router({
   sourcing: sourcingRouter,
   inventory: inventoryRouter,
   fulfillment: fulfillmentRouter,
+  orderRouting: orderRoutingRouter,
   ads: adsRouter,
   audit: auditRouter,
   analytics: analyticsRouter,
