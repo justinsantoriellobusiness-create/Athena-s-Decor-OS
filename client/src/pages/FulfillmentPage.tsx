@@ -10,7 +10,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
-import { CJ_LOW_BALANCE_THRESHOLD } from "@shared/const";
+import { CJ_LOW_BALANCE_THRESHOLD, DSERS_ORDER_URL } from "@shared/const";
 
 const STATUS_META: Record<string, { label: string; badge: string }> = {
   pending: { label: "Pending", badge: "badge-info" },
@@ -44,7 +44,6 @@ function timeAgo(date: string | Date | null | undefined) {
 
 // DSers has no public API, so there's no per-order deep link — this jumps
 // to the DSers dashboard itself so you can find the order there manually.
-const DSERS_DASHBOARD_URL = "https://www.dsers.com/";
 
 function LevelIcon({ level }: { level: string }) {
   if (level === "success") return <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />;
@@ -120,14 +119,25 @@ function OrderRow({ order, shopifyOrderUrl }: { order: any; shopifyOrderUrl?: st
           {order.cjOrderId && <p className="text-[9px] text-muted-foreground/60 mt-0.5">CJ order {order.cjOrderId}</p>}
         </div>
         {(order.status === "routed_to_dsers" || order.status === "dsers_stuck") && (
-          <a href={DSERS_DASHBOARD_URL} target="_blank" rel="noopener noreferrer" onClick={(e) => e.stopPropagation()}
+          <a href={DSERS_ORDER_URL} target="_blank" rel="noopener noreferrer"
+            onClick={(e) => {
+              e.stopPropagation();
+              // Copy first so DSers' order search can be filled with a paste.
+              // Best-effort: clipboard access can be denied, and the link must
+              // still open either way, so a rejection only changes the toast.
+              const ref = String(order.orderNumber ?? "");
+              navigator.clipboard?.writeText(ref).then(
+                () => toast.success(`Order #${ref} copied — paste it into DSers' order search`),
+                () => toast.info(`Search DSers for order #${ref}`)
+              );
+            }}
             className={cn(
               "flex items-center justify-center h-7 w-7 rounded-md border transition-colors flex-shrink-0",
               order.status === "dsers_stuck"
                 ? "border-red-500/30 text-red-400 hover:bg-red-500/10"
                 : "border-border/50 text-muted-foreground hover:text-foreground hover:bg-secondary/50"
             )}
-            title="Open DSers dashboard — no per-order link since DSers has no public API, but this gets you there fast">
+            title="Copy this order number and open DSers — DSers has no merchant order API, so the order itself is placed there">
             <Truck className="w-3 h-3" />
           </a>
         )}
