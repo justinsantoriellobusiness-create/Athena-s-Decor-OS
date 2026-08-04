@@ -78,9 +78,22 @@ string — the same value you'll use in step 4.
 
 ### Step 4 — configure
 
-Via `orderRouting.saveConfig`: `webhookUrl` (the Monthly Plug intake URL),
-`signingSecret` (the shared secret from step 3), and the rule you picked in
-step 2.
+**Already done for production.** The transport half is set from Railway, so the
+shared secret never has to be pasted into a form:
+
+| Service | Variable |
+|---|---|
+| Monthly-Plug-OS | `ATHENA_WEBHOOK_SECRET` |
+| Athena-s-Decor-OS | `MONTHLY_PLUG_WEBHOOK_SECRET` (same value), `MONTHLY_PLUG_WEBHOOK_URL` |
+
+`getOrderRoutingConfig()` falls back to those env vars when nothing is saved in
+the DB. A value saved through `orderRouting.saveConfig` still takes precedence,
+so the UI path keeps working.
+
+**Still required:** the matching rule from step 2 —
+`saveConfig({ rules: { vendors: ["..."] } })`. There is no env fallback for
+rules on purpose: a wrong rule silently misroutes real orders, so it has to be
+set deliberately and checked with `preview` first.
 
 ### Step 5 — dry-run before arming
 

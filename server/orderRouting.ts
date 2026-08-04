@@ -84,17 +84,28 @@ const asStringArray = (value: unknown): string[] =>
  * module is driven by the fulfillment loop, not by its own cron tick.
  */
 export async function getOrderRoutingConfig(): Promise<OrderRoutingConfig> {
+  // Env fallbacks for the transport half of the config. The signing secret is
+  // shared with the Monthly Plug intake (ATHENA_WEBHOOK_SECRET there), and
+  // setting both sides from the deployment platform means the value never has
+  // to travel through a chat window, a screenshot, or a support ticket to get
+  // typed into a form. A secret saved through the UI still wins, so this is a
+  // convenience, not a lock-in.
+  const envUrl = process.env.MONTHLY_PLUG_WEBHOOK_URL ?? "";
+  const envSecret = process.env.MONTHLY_PLUG_WEBHOOK_SECRET ?? "";
+
   const setting = await getAutomationSetting(ROUTING_MODULE);
-  if (!setting) return DEFAULT_CONFIG;
+  if (!setting) return { ...DEFAULT_CONFIG, webhookUrl: envUrl, signingSecret: envSecret };
   const raw = (setting.config as Record<string, unknown> | null) ?? {};
   const rules = (raw.rules as Record<string, unknown> | undefined) ?? {};
   const storedSecret = typeof raw.signingSecret === "string" ? raw.signingSecret : "";
+  // Tolerate a plaintext secret written before encryption was in place
+  // rather than silently routing with an empty secret.
+  const decrypted = storedSecret ? (decryptCredential(storedSecret) ?? storedSecret) : "";
+  const storedUrl = typeof raw.webhookUrl === "string" ? raw.webhookUrl : "";
   return {
     enabled: setting.enabled === true,
-    webhookUrl: typeof raw.webhookUrl === "string" ? raw.webhookUrl : "",
-    // Tolerate a plaintext secret written before encryption was in place
-    // rather than silently routing with an empty secret.
-    signingSecret: storedSecret ? (decryptCredential(storedSecret) ?? storedSecret) : "",
+    webhookUrl: storedUrl || envUrl,
+    signingSecret: decrypted || envSecret,
     rules: {
       vendors: asStringArray(rules.vendors),
       skuPrefixes: asStringArray(rules.skuPrefixes),
