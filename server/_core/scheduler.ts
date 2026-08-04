@@ -44,6 +44,12 @@ function isDueThisMinute(cronExpression: string, now: Date): boolean {
   );
 }
 
+// Modules that live in automationSettings purely to hold `enabled` + `config`
+// and have no /api/scheduled/<module> route behind them. Without this guard,
+// switching one on would make the poller POST at a route that doesn't exist
+// and log a 404 on every matching tick.
+const CONFIG_ONLY_MODULES = new Set(["order_routing"]);
+
 const lastFiredMinute = new Map<string, string>();
 
 async function tick(port: number) {
@@ -60,6 +66,7 @@ async function tick(port: number) {
 
   for (const setting of settings) {
     if (!setting.enabled || !setting.cronExpression) continue;
+    if (CONFIG_ONLY_MODULES.has(setting.module)) continue;
     if (!isDueThisMinute(setting.cronExpression, now)) continue;
     if (lastFiredMinute.get(setting.module) === minuteKey) continue;
     lastFiredMinute.set(setting.module, minuteKey);

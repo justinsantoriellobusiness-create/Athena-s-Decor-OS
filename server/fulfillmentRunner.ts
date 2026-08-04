@@ -11,10 +11,12 @@
  *  2. cj-order-<id> tagged → poll CJ for tracking; when shipped, create a
  *     Shopify fulfillment so the customer is notified.
  *  3. dsers-fulfill tagged → watch; escalate to owner if unfulfilled 48h+.
- *  4. New order → map line items to a supplier via sourced_products:
+ *  4. Monthly Plug (DHgate) order → hand off to the Monthly Plug command
+ *     center and stop; see ./orderRouting.ts.
+ *  5. New order → map line items to a supplier via sourced_products:
  *       • all-CJ → place a real CJ order, tag cj-order-<id>.
  *       • all-DSers → tag dsers-fulfill for DSers' own Shopify sync.
- *  5. Unmappable / mixed-supplier → tag athena-skip-fulfill + notify owner.
+ *  6. Unmappable / mixed-supplier → tag athena-skip-fulfill + notify owner.
  */
 import { getShopifyClient } from "./shopify";
 import { decryptCredential, decryptCredentials } from "./crypto";
@@ -33,11 +35,16 @@ import {
 import { notifyOwner } from "./_core/notification";
 import { sleep } from "./rateLimiter";
 import { CJ_LOW_BALANCE_THRESHOLD } from "../shared/const";
+import {
+  getOrderRoutingConfig, routeOrder,
+  MONTHLY_PLUG_ROUTED_TAG, MONTHLY_PLUG_SPLIT_TAG, MONTHLY_PLUG_FAILED_TAG,
+} from "./orderRouting";
 
 export type FulfillmentResult = {
   ordersPlaced: number;
   ordersShipped: number;
   ordersRoutedToDsers: number;
+  ordersRoutedToMonthlyPlug: number;
   ordersSkipped: number;
   errors: string[];
   lockedOut?: boolean;
@@ -56,6 +63,9 @@ export type FulfillmentOrderStatus =
   | "routed_to_dsers"
   | "dsers_stuck"
   | "needs_manual"
+  | "routed_to_monthly_plug"
+  | "monthly_plug_split"
+  | "monthly_plug_failed"
   | "cancelled";
 
 /**
@@ -71,12 +81,15 @@ export function deriveOrderStatus(order: any): { status: FulfillmentOrderStatus;
   if (cjTag) return { status: "placed_with_cj", cjOrderId: cjTag.slice("cj-order-".length) };
   if (tags.includes("dsers-escalated")) return { status: "dsers_stuck" };
   if (tags.includes("dsers-fulfill")) return { status: "routed_to_dsers" };
+  if (tags.includes(MONTHLY_PLUG_ROUTED_TAG)) return { status: "routed_to_monthly_plug" };
+  if (tags.includes(MONTHLY_PLUG_SPLIT_TAG)) return { status: "monthly_plug_split" };
+  if (tags.includes(MONTHLY_PLUG_FAILED_TAG)) return { status: "monthly_plug_failed" };
   if (tags.includes("athena-skip-fulfill")) return { status: "needs_manual" };
   return { status: "pending" };
 }
 
 export async function runAutoFulfillment(): Promise<FulfillmentResult> {
-  const result: FulfillmentResult = { ordersPlaced: 0, ordersShipped: 0, ordersRoutedToDsers: 0, ordersSkipped: 0, errors: [] };
+  const result: FulfillmentResult = { ordersPlaced: 0, ordersShipped: 0, ordersRoutedToDsers: 0, ordersRoutedToMonthlyPlug: 0, ordersSkipped: 0, errors: [] };
 
   // Atomic run-lock: if another fulfillment run is in progress (or a
   // redeploy left the flag set mid-tick), skip rather than risk a second
@@ -140,11 +153,46 @@ export async function runAutoFulfillment(): Promise<FulfillmentResult> {
 
     const { orders } = await client.getOrders(50, "open");
 
+    // Loaded once per run: routing config is small and identical for every
+    // order, so re-reading it per order would just be extra DB round-trips.
+    const routingConfig = await getOrderRoutingConfig();
+
     for (const order of orders) {
       try {
         if (order.fulfillment_status === "fulfilled") continue;
         if (order.cancelled_at) continue;
         const tags = orderTags(order);
+
+        // ── Monthly Plug handoff ────────────────────────────────────────
+        // Runs before any supplier mapping: these are DHgate products with
+        // no CJ/DSers mapping, so without this they fall through to
+        // athena-skip-fulfill and page the owner on every single order.
+        // No-ops entirely when routing is disabled or the order is pure
+        // Athena's Decor.
+        const routing = await routeOrder(
+          order,
+          routingConfig,
+          (orderId, nextTags) => client.updateOrderTags(orderId, nextTags.join(", ")),
+          tags
+        );
+        if (routing.action === "routed") {
+          result.ordersRoutedToMonthlyPlug++;
+          await notifyOwner({
+            module: "fulfillment",
+            title: `Order #${order.order_number} sent to Monthly Plug`,
+            content: `${routing.itemCount} Monthly Plug item(s) handed off to the Monthly Plug command center for DHgate fulfillment. Nothing to do here.`,
+          }).catch(() => {});
+          continue;
+        }
+        if (routing.action === "already_routed") continue;
+        if (routing.action === "needs_manual_split") {
+          result.ordersSkipped++;
+          continue;
+        }
+        if (routing.action === "failed") {
+          result.errors.push(`Order #${order.order_number}: Monthly Plug handoff failed — ${routing.error}`);
+          continue;
+        }
 
         // ── Already placed with CJ: check for tracking ────────────────────
         const cjTag = tags.find(t => t.startsWith("cj-order-"));
@@ -324,7 +372,7 @@ export async function runAutoFulfillment(): Promise<FulfillmentResult> {
     await releaseAutomationLock(
       "fulfillment",
       hadHardError ? "error" : "success",
-      `placed=${result.ordersPlaced} shipped=${result.ordersShipped} dsers=${result.ordersRoutedToDsers} skipped=${result.ordersSkipped}${result.errors.length ? ` errors=${result.errors.length}` : ""}`,
+      `placed=${result.ordersPlaced} shipped=${result.ordersShipped} dsers=${result.ordersRoutedToDsers} monthlyPlug=${result.ordersRoutedToMonthlyPlug} skipped=${result.ordersSkipped}${result.errors.length ? ` errors=${result.errors.length}` : ""}`,
     );
   }
 }

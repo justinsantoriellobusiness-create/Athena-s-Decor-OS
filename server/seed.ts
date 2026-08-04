@@ -15,6 +15,14 @@ const DEFAULT_MODULES = [
   { module: "audit", enabled: false, cronExpression: "0 3 * * 0" },
   // Auto-fulfillment: paid Shopify orders → CJ/DSers → tracking sync
   { module: "fulfillment", enabled: true, cronExpression: "*/30 * * * *" },
+  // Monthly Plug order handoff. Config-only row — it stores rules in `config`
+  // and uses `enabled` as the on/off switch, but has no /api/scheduled route
+  // of its own: the fulfillment loop calls it inline per order. The
+  // cronExpression is required by the schema and never used; scheduler.ts
+  // skips this module by name (see CONFIG_ONLY_MODULES) so enabling it can't
+  // make the poller fire at a route that doesn't exist. Seeded disabled so it
+  // can't forward anything before vendor rules and the webhook are set up.
+  { module: "order_routing", enabled: false, cronExpression: "0 0 * * *" },
 ];
 
 export async function seedDefaultSettings() {
