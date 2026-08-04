@@ -7,6 +7,7 @@ import {
   verifySignature,
   routeOrder,
   EMPTY_RULES,
+  DEFAULT_MONTHLY_PLUG_RULES,
   MONTHLY_PLUG_ROUTED_TAG,
   MONTHLY_PLUG_SPLIT_TAG,
   MONTHLY_PLUG_FAILED_TAG,
@@ -210,5 +211,39 @@ describe("routeOrder", () => {
     expect(out.action).toBe("failed");
     expect(fetchSpy).not.toHaveBeenCalled();
     fetchSpy.mockRestore();
+  });
+});
+
+describe("default brand rules", () => {
+  const cases = [
+    "Monthly Plug",
+    "monthly plug",
+    "MonthlyPlug",
+    "monthly-plug",
+    "MONTHLY PLUG",
+    "Monthly  Plug",
+    "Monthly Plug LLC",
+    "Monthly Plug Wigs",
+  ];
+  for (const vendor of cases) {
+    it(`matches vendor "${vendor}" without hand-configuration`, () => {
+      expect(isMonthlyPlugLineItem({ vendor }, DEFAULT_MONTHLY_PLUG_RULES)).toBe(true);
+    });
+  }
+
+  it("matches the MP- SKU prefix when vendor is blank", () => {
+    expect(isMonthlyPlugLineItem({ vendor: "", sku: "MP-BONG-01" }, DEFAULT_MONTHLY_PLUG_RULES)).toBe(true);
+  });
+
+  it("does not sweep in Athena's Decor products", () => {
+    for (const vendor of ["Athena's Decor", "Athenas Decor", "CJ Dropshipping", "AliExpress", "Plug", "Monthly"]) {
+      expect(isMonthlyPlugLineItem({ vendor, sku: "AD-VASE-9" }, DEFAULT_MONTHLY_PLUG_RULES)).toBe(false);
+    }
+  });
+
+  it("does not match a short rule by substring", () => {
+    // "mp" normalizes to 2 chars — below the substring threshold, so a vendor
+    // like "Lamp Co" must not match.
+    expect(isMonthlyPlugLineItem({ vendor: "Lamp Co" }, { ...EMPTY_RULES, vendors: ["MP"] })).toBe(false);
   });
 });

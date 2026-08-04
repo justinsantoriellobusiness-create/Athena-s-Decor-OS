@@ -68,6 +68,29 @@ export const EMPTY_RULES: OrderRoutingRules = {
   channels: [],
 };
 
+/**
+ * Applied when no rules have been configured. The Monthly Plug catalog was
+ * imported by CSV, so the exact casing/spacing of its vendor string isn't
+ * known up front — matching normalizes both sides (see normalizeBrand), so
+ * "Monthly Plug", "MonthlyPlug", "monthly-plug" and "MONTHLY PLUG" all hit.
+ *
+ * Safe as a default because it names one specific brand. The bad outcome for
+ * a routing rule is over-breadth — a rule that swept in Athena's Decor
+ * products would forward them to a system that can't fulfill them — and no
+ * home-decor vendor is called "monthly plug". If the catalog's vendor field
+ * is blank instead, nothing matches and orders keep falling through to the
+ * existing athena-skip-fulfill path, which is the pre-routing status quo.
+ */
+export const DEFAULT_MONTHLY_PLUG_RULES: OrderRoutingRules = {
+  vendors: ["Monthly Plug"],
+  skuPrefixes: ["MP-"],
+  productIds: [],
+  channels: [],
+};
+
+/** Lowercase and strip everything that isn't a letter or digit. */
+const normalizeBrand = (value: string): string => value.toLowerCase().replace(/[^a-z0-9]/g, "");
+
 const DEFAULT_CONFIG: OrderRoutingConfig = {
   enabled: false,
   webhookUrl: "",
@@ -93,8 +116,20 @@ export async function getOrderRoutingConfig(): Promise<OrderRoutingConfig> {
   const envUrl = process.env.MONTHLY_PLUG_WEBHOOK_URL ?? "";
   const envSecret = process.env.MONTHLY_PLUG_WEBHOOK_SECRET ?? "";
 
+  // Lets routing be switched on from the deployment platform, so turning it on
+  // doesn't require a UI round-trip. A row saved with enabled=true still wins.
+  const envEnabled = process.env.MONTHLY_PLUG_ROUTING_ENABLED === "true";
+
   const setting = await getAutomationSetting(ROUTING_MODULE);
-  if (!setting) return { ...DEFAULT_CONFIG, webhookUrl: envUrl, signingSecret: envSecret };
+  if (!setting) {
+    return {
+      ...DEFAULT_CONFIG,
+      enabled: envEnabled,
+      webhookUrl: envUrl,
+      signingSecret: envSecret,
+      rules: DEFAULT_MONTHLY_PLUG_RULES,
+    };
+  }
   const raw = (setting.config as Record<string, unknown> | null) ?? {};
   const rules = (raw.rules as Record<string, unknown> | undefined) ?? {};
   const storedSecret = typeof raw.signingSecret === "string" ? raw.signingSecret : "";
@@ -102,16 +137,26 @@ export async function getOrderRoutingConfig(): Promise<OrderRoutingConfig> {
   // rather than silently routing with an empty secret.
   const decrypted = storedSecret ? (decryptCredential(storedSecret) ?? storedSecret) : "";
   const storedUrl = typeof raw.webhookUrl === "string" ? raw.webhookUrl : "";
+  const storedRules: OrderRoutingRules = {
+    vendors: asStringArray(rules.vendors),
+    skuPrefixes: asStringArray(rules.skuPrefixes),
+    productIds: asStringArray(rules.productIds),
+    channels: asStringArray(rules.channels),
+  };
+  // No configured rule at all means nothing would ever match and every Monthly
+  // Plug order would keep piling up in athena-skip-fulfill. Fall back to the
+  // brand defaults rather than silently doing nothing. Channels stay as stored
+  // — an empty channel list already means "any channel".
+  const hasStoredRule =
+    storedRules.vendors.length > 0 || storedRules.skuPrefixes.length > 0 || storedRules.productIds.length > 0;
+
   return {
-    enabled: setting.enabled === true,
+    enabled: setting.enabled === true || envEnabled,
     webhookUrl: storedUrl || envUrl,
     signingSecret: decrypted || envSecret,
-    rules: {
-      vendors: asStringArray(rules.vendors),
-      skuPrefixes: asStringArray(rules.skuPrefixes),
-      productIds: asStringArray(rules.productIds),
-      channels: asStringArray(rules.channels),
-    },
+    rules: hasStoredRule
+      ? storedRules
+      : { ...DEFAULT_MONTHLY_PLUG_RULES, channels: storedRules.channels },
   };
 }
 
@@ -157,8 +202,18 @@ export type LineItemLike = {
  * so classifying an order costs no extra API calls.
  */
 export function isMonthlyPlugLineItem(li: LineItemLike, rules: OrderRoutingRules): boolean {
-  const vendor = (li.vendor ?? "").trim().toLowerCase();
-  if (vendor && rules.vendors.some(v => v.trim().toLowerCase() === vendor)) return true;
+  const vendor = normalizeBrand(li.vendor ?? "");
+  if (vendor) {
+    for (const rule of rules.vendors) {
+      const target = normalizeBrand(rule);
+      if (!target) continue;
+      if (vendor === target) return true;
+      // Substring only for distinctive names, so a stored "Monthly Plug" still
+      // matches "Monthly Plug LLC" or "Monthly Plug Wigs". Gated on length
+      // because a short rule ("mp") would match unrelated vendors.
+      if (target.length >= 8 && vendor.includes(target)) return true;
+    }
+  }
 
   const sku = (li.sku ?? "").trim().toLowerCase();
   if (sku && rules.skuPrefixes.some(p => p.trim() && sku.startsWith(p.trim().toLowerCase()))) return true;
