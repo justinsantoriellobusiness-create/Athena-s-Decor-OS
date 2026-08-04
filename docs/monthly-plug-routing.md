@@ -31,21 +31,74 @@ order. A human decides.
 
 ## Setup
 
-1. **Tag the catalog.** The most reliable rule is the Shopify product `vendor`
-   field — set it to `Monthly Plug` on the migrated CSV catalog. A SKU prefix
-   (e.g. `MP-`) works equally well if the CSV already carries one.
-2. **Stand up an intake endpoint** on the Monthly Plug side (see the contract
-   below).
-3. **Configure** via the `orderRouting.saveConfig` tRPC endpoint: `webhookUrl`,
-   `signingSecret` (any strong random string, shared with the receiver), and
-   `rules.vendors` / `rules.skuPrefixes` / `rules.productIds`.
-4. **Dry-run** with `orderRouting.preview`. It classifies the live order list
-   and returns per-verdict counts, forwarding nothing. Confirm the numbers look
-   right before step 5.
-5. **Enable** with `saveConfig({ enabled: true })`. This is refused unless a
-   webhook URL, a signing secret, and at least one rule are all present.
+Routing is seeded **disabled** and forwards nothing until every step below is
+done.
 
-Routing is seeded **disabled**, so nothing is forwarded until you do this.
+### Step 1 — find out what the catalog calls itself
+
+**Do not guess the vendor string.** Call `orderRouting.listVendors`. It returns
+every distinct vendor in the Shopify catalog with a product count and sample
+SKU prefixes:
+
+```jsonc
+{ "totalProducts": 412, "vendors": [
+  { "vendor": "Athena's Decor", "productCount": 265, "skuPrefixes": ["AD-"] },
+  { "vendor": "Monthly Plug",   "productCount": 143, "skuPrefixes": ["MP-"] },
+  { "vendor": "(no vendor set)", "productCount": 4,  "skuPrefixes": [] }
+]}
+```
+
+The counts are the check: if "Monthly Plug" shows 143 products and you migrated
+~143, the vendor field is set correctly and one rule covers the catalog.
+
+### Step 2 — fix the tagging if it's wrong
+
+Whatever `listVendors` shows is what you have to match. Three cases:
+
+- **Vendor is already set consistently** (e.g. `Monthly Plug` on all of them) —
+  nothing to do. Use `rules.vendors: ["Monthly Plug"]`.
+- **Vendor is blank or wrong**, but SKUs carry a prefix — use
+  `rules.skuPrefixes: ["MP-"]`. Equally reliable, no catalog edit needed.
+- **Neither is consistent** — fix it at the source. In Shopify admin: Products →
+  filter to the migrated set → select all → **Bulk edit** → add the *Vendor*
+  column → set `Monthly Plug` → Save. Re-run `listVendors` to confirm the count.
+  Re-importing the original CSV with a `Vendor` column set also works.
+
+Prefer vendor over SKU prefix when you have the choice: it's a single field
+Shopify shows in the admin UI, so it's easier to audit later.
+
+You are tagging **products**, not orders. Orders inherit `vendor` and `sku` from
+their line items automatically, which is why no per-order work is ever needed.
+
+### Step 3 — stand up the receiving end
+
+Already built: `POST /api/webhooks/athena` in the Monthly-Plug-OS repo
+(`server/webhooks.ts`). Set `ATHENA_WEBHOOK_SECRET` there to a strong random
+string — the same value you'll use in step 4.
+
+### Step 4 — configure
+
+Via `orderRouting.saveConfig`: `webhookUrl` (the Monthly Plug intake URL),
+`signingSecret` (the shared secret from step 3), and the rule you picked in
+step 2.
+
+### Step 5 — dry-run before arming
+
+Call `orderRouting.preview`. It classifies the **live** order list and returns
+per-verdict counts, forwarding nothing:
+
+```jsonc
+{ "enabled": false, "counts": { "athena": 18, "monthly_plug": 6, "mixed": 1 } }
+```
+
+Sanity-check those numbers against what you know is in the queue. If
+`monthly_plug` is 0, your rule doesn't match — go back to step 1. If `athena` is
+0, your rule is too broad and would forward everything.
+
+### Step 6 — enable
+
+`saveConfig({ enabled: true })`. Refused unless a webhook URL, a signing secret,
+and at least one rule are all present.
 
 ### Optional: restrict to specific channels
 
@@ -55,6 +108,9 @@ product is unfulfillable here no matter which channel sold it, so a direct
 storefront sale should route too.
 
 ## Webhook contract
+
+Implemented by `POST /api/webhooks/athena` in the Monthly-Plug-OS repo. Documented
+here because this end defines it.
 
 `POST` to your `webhookUrl`:
 
@@ -106,6 +162,16 @@ The receiver **must**:
 | `monthly-plug-routed` | handed off successfully; idempotency guard |
 | `monthly-plug-split` | mixed-brand order, needs manual handling |
 | `monthly-plug-failed` | handoff failed; retried on later runs, cleared on success |
+
+## What happens on the Monthly Plug side
+
+The intake records the order and writes a `fulfillment_orders` row carrying the
+real shipping address, so it shows up in the Monthly Plug fulfillment queue.
+
+**It is not auto-purchased.** DHGate has no buyer-side purchase API — their Open
+Platform covers seller-side order sync and tracking upload only — so someone
+still places the DHGate order by hand. Routing gets the order in front of the
+right system with the right data; it does not make DHGate fulfillment autonomous.
 
 ## What this does not touch
 

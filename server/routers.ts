@@ -124,7 +124,7 @@ import {
 import { runInventoryScan, computeStatus } from "./inventoryRunner";
 import { runAutoFulfillment, deriveOrderStatus, orderTags } from "./fulfillmentRunner";
 import { getCjAccessToken, getCjBalance, getCjOrderStatus, getCjProductVariants, getCjVariantStock } from "./_core/cjDropshipping";
-import { getShopifyClient } from "./shopify";
+import { getShopifyClient, SHOPIFY_API_VERSION } from "./shopify";
 import { getConnectedShopifyClient } from "./shopifyHelper";
 import { decryptCredential } from "./crypto";
 import {
@@ -1636,6 +1636,48 @@ const orderRoutingRouter = router({
     }),
 
   /**
+   * Lists every distinct vendor in the Shopify catalog with a product count
+   * and sample SKU prefixes. This is the starting point for setting up
+   * routing: you need to know what the migrated Monthly Plug catalog actually
+   * calls itself before you can write a rule that matches it, and guessing
+   * the vendor string is the easiest way to route nothing (or everything).
+   */
+  listVendors: protectedProcedure.query(async () => {
+    const config = await getShopifyConfig();
+    if (!config?.isConnected) return { connected: false as const, vendors: [] };
+    const client = await getShopifyClient(config.storeDomain, decryptCredential(config.accessToken) ?? config.accessToken);
+    const products = await client.getAllProducts();
+
+    // Aggregated in Node — this is grouping and counting, not model work.
+    const byVendor = new Map<string, { productCount: number; skuPrefixes: Set<string> }>();
+    for (const p of products as any[]) {
+      const vendor = (p.vendor ?? "").trim() || "(no vendor set)";
+      let entry = byVendor.get(vendor);
+      if (!entry) {
+        entry = { productCount: 0, skuPrefixes: new Set<string>() };
+        byVendor.set(vendor, entry);
+      }
+      entry.productCount++;
+      for (const v of p.variants ?? []) {
+        const sku = String(v.sku ?? "").trim();
+        // A prefix is only useful as a rule if there's a delimiter to cut on.
+        const match = sku.match(/^([A-Za-z0-9]+[-_])/);
+        if (match) entry.skuPrefixes.add(match[1]);
+      }
+    }
+
+    const vendors = Array.from(byVendor.entries())
+      .map(([vendor, v]) => ({
+        vendor,
+        productCount: v.productCount,
+        skuPrefixes: Array.from(v.skuPrefixes).slice(0, 5),
+      }))
+      .sort((a, b) => b.productCount - a.productCount);
+
+    return { connected: true as const, totalProducts: products.length, vendors };
+  }),
+
+  /**
    * Dry run: classifies the live Shopify order list against the saved rules
    * without forwarding anything. This is how you confirm the rules select the
    * right orders before arming the handoff.
@@ -2781,7 +2823,7 @@ const integrationsRouter = router({
               throw new Error("Shop domain must be a *.myshopify.com address");
             }
             // Test Shopify connection with the provided access token
-            const testUrl = `https://${credentials.shopDomain}/admin/api/2024-01/shop.json`;
+            const testUrl = `https://${credentials.shopDomain}/admin/api/${SHOPIFY_API_VERSION}/shop.json`;
             const res = await fetch(testUrl, {
               headers: { "X-Shopify-Access-Token": credentials.apiKey },
             });
@@ -2965,7 +3007,7 @@ const integrationsRouter = router({
             if (!meta.shopDomain || !shopDomainPattern.test(meta.shopDomain)) {
               return { success: false, message: "Stored shop domain is invalid — reconnect Shopify" };
             }
-            const res = await fetch(`https://${meta.shopDomain}/admin/api/2024-01/shop.json`, {
+            const res = await fetch(`https://${meta.shopDomain}/admin/api/${SHOPIFY_API_VERSION}/shop.json`, {
               headers: { "X-Shopify-Access-Token": accessToken },
             });
             return { success: res.ok, message: res.ok ? "Shopify connection verified — store is accessible" : "Connection failed — check token" };
