@@ -13,7 +13,7 @@ import {
   ShoppingBag, Package, CreditCard, BarChart3, Megaphone, Video, Truck, Store, Globe
 } from "lucide-react";
 
-type Platform = "shopify" | "ebay" | "paypal" | "google" | "facebook" | "tiktok" | "autods" | "cj_dropshipping" | "dsers";
+type Platform = "shopify" | "ebay" | "paypal" | "google" | "facebook" | "tiktok" | "autods" | "cj_dropshipping" | "dsers" | "buffer";
 
 interface PlatformConfig {
   id: Platform;
@@ -114,6 +114,19 @@ const PLATFORMS: PlatformConfig[] = [
     helpUrl: "https://ads.tiktok.com/marketing_api/docs?id=1738855176671234",
   },
   // AutoDS removed — account/connection discontinued by the owner.
+  {
+    id: "buffer",
+    name: "Buffer (Social Media)",
+    description: "Publish and schedule to Instagram, Facebook, X, LinkedIn, TikTok, Pinterest, Threads and more — one key covers every connected network.",
+    icon: Megaphone,
+    color: "text-indigo-500",
+    category: "ads",
+    fields: [
+      { key: "apiKey", label: "Buffer API Key", placeholder: "your-buffer-personal-api-key", type: "password", required: true },
+    ],
+    instructions: "Buffer → Settings → API → create a personal API key. Connect your social accounts as channels inside Buffer first; they show up here automatically once the key is saved.",
+    helpUrl: "https://developers.buffer.com/",
+  },
   {
     id: "cj_dropshipping",
     name: "CJ Dropshipping",
