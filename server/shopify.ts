@@ -108,6 +108,20 @@ async function refreshShopifyAccessToken(domain: string): Promise<string | null>
   return tokenRefreshInFlight;
 }
 
+/**
+ * Shopify supports each Admin API version for a minimum of 12 months. This was
+ * pinned to 2024-01 — long past end-of-life — and Shopify silently "falls
+ * forward", serving requests to a retired version using the oldest supported
+ * one instead. That means the API was never actually erroring; it was quietly
+ * answering as a version this code was not written against, which is a worse
+ * failure mode than a clean 400.
+ *
+ * SHOPIFY_API_VERSION overrides this so a version bump is an env change, not a
+ * redeploy. Check https://shopify.dev/docs/api/usage/versioning before raising
+ * it; do not guess a version string from memory.
+ */
+export const SHOPIFY_API_VERSION = process.env.SHOPIFY_API_VERSION || "2026-01";
+
 export class ShopifyClient {
   private domain: string;
   private token: string;
@@ -117,7 +131,7 @@ export class ShopifyClient {
     // Normalize domain
     this.domain = domain.replace(/^https?:\/\//, "").replace(/\/$/, "");
     this.token = token;
-    this.baseUrl = `https://${this.domain}/admin/api/2024-01`;
+    this.baseUrl = `https://${this.domain}/admin/api/${SHOPIFY_API_VERSION}`;
   }
 
   private async requestOnceWithHeaders<T>(
