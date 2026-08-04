@@ -16,6 +16,7 @@ import { ENV } from "./_core/env";
 import { fetchPayPalTransactions } from "./_core/paypal";
 import { fetchEbayTransactions } from "./_core/ebay";
 import { publishFacebookCampaign, publishTikTokCampaign } from "./_core/adPlatforms";
+import { listBufferChannels, createBufferPostMulti, testBufferConnection } from "./_core/buffer";
 import { isFirecrawlConfigured, searchRealBacklinkCandidates, searchRealWebsiteCandidates, firecrawlScrapeContactInfo } from "./_core/firecrawl";
 import { hashPassword, verifyPasswordHash, safeEquals, isPinRateLimited, clearPinAttempts } from "./_core/passwordAuth";
 import { runFullAudit, applyAllAuditFixes } from "./auditRunner";
@@ -2800,7 +2801,7 @@ const integrationsRouter = router({
   // Universal connect — all platforms use API key/token login (no broken OAuth)
   connect: protectedProcedure
     .input(z.object({
-      platform: z.enum(["shopify", "ebay", "paypal", "google", "facebook", "tiktok", "autods", "cj_dropshipping", "dsers"]),
+      platform: z.enum(["shopify", "ebay", "paypal", "google", "facebook", "tiktok", "autods", "cj_dropshipping", "dsers", "buffer"]),
       credentials: z.object({
         apiKey: z.string().min(1),
         apiSecret: z.string().optional(),
@@ -2873,6 +2874,15 @@ const integrationsRouter = router({
             await upsertEbayFinancialAccount(
               encryptCredentials({ clientId, clientSecret, refreshToken })
             );
+            break;
+          }
+          case "buffer": {
+            // Validated by listing channels — proves the key authenticates
+            // AND that Buffer's schema matches what the client expects, which
+            // a bare auth ping would not.
+            const result = await testBufferConnection(credentials.apiKey);
+            valid = result.ok;
+            if (!result.ok) errorMsg = result.error;
             break;
           }
           case "paypal": {
@@ -2971,7 +2981,7 @@ const integrationsRouter = router({
   // Legacy saveApiKey for backward compatibility
   saveApiKey: protectedProcedure
     .input(z.object({
-      platform: z.enum(["shopify", "ebay", "paypal", "google", "facebook", "tiktok", "autods", "cj_dropshipping", "dsers"]),
+      platform: z.enum(["shopify", "ebay", "paypal", "google", "facebook", "tiktok", "autods", "cj_dropshipping", "dsers", "buffer"]),
       apiKey: z.string().min(1),
       storeId: z.string().optional(),
     }))
@@ -2986,7 +2996,7 @@ const integrationsRouter = router({
   // Keep initiateOAuth for backward compat but redirect to API key flow
   initiateOAuth: protectedProcedure
     .input(z.object({
-      platform: z.enum(["shopify", "ebay", "paypal", "google", "facebook", "tiktok", "autods", "cj_dropshipping", "dsers"]),
+      platform: z.enum(["shopify", "ebay", "paypal", "google", "facebook", "tiktok", "autods", "cj_dropshipping", "dsers", "buffer"]),
       shopDomain: z.string().optional(),
       origin: z.string().optional(),
     }))
@@ -3011,14 +3021,14 @@ const integrationsRouter = router({
     }),
 
   disconnect: protectedProcedure
-    .input(z.object({ platform: z.enum(["shopify", "ebay", "paypal", "google", "facebook", "tiktok", "autods", "cj_dropshipping", "dsers"]) }))
+    .input(z.object({ platform: z.enum(["shopify", "ebay", "paypal", "google", "facebook", "tiktok", "autods", "cj_dropshipping", "dsers", "buffer"]) }))
     .mutation(async ({ ctx, input }) => {
       await deleteIntegrationToken(ctx.user.id, input.platform);
       return { success: true };
     }),
 
   testConnection: protectedProcedure
-    .input(z.object({ platform: z.enum(["shopify", "ebay", "paypal", "google", "facebook", "tiktok", "autods", "cj_dropshipping", "dsers"]) }))
+    .input(z.object({ platform: z.enum(["shopify", "ebay", "paypal", "google", "facebook", "tiktok", "autods", "cj_dropshipping", "dsers", "buffer"]) }))
     .mutation(async ({ ctx, input }) => {
       const token = await getIntegrationToken(ctx.user.id, input.platform);
       if (!token) throw new TRPCError({ code: "NOT_FOUND", message: "Platform not connected" });
@@ -4611,6 +4621,70 @@ const settingsRouter = router({
 });
 
 // ─── App Router ───────────────────────────────────────────────────────────────
+
+// Social publishing via Buffer — one key covers every connected network.
+const socialRouter = router({
+  listChannels: protectedProcedure.query(async ({ ctx }) => {
+    const token = await getIntegrationToken(ctx.user.id, "buffer");
+    const apiKey = token?.accessToken ? decryptCredential(token.accessToken) : null;
+    if (!apiKey) return { connected: false as const, channels: [] };
+    try {
+      return { connected: true as const, channels: await listBufferChannels(apiKey) };
+    } catch (err: any) {
+      throw new TRPCError({ code: "BAD_REQUEST", message: err?.message ?? "Buffer request failed" });
+    }
+  }),
+
+  publish: protectedProcedure
+    .input(z.object({
+      channelIds: z.array(z.string().min(1)).min(1, "Pick at least one channel"),
+      text: z.string().min(1).max(5000),
+      imageUrl: z.string().url().optional(),
+      scheduledAt: z.string().datetime().optional(),
+    }))
+    .mutation(async ({ ctx, input }) => {
+      const token = await getIntegrationToken(ctx.user.id, "buffer");
+      const apiKey = token?.accessToken ? decryptCredential(token.accessToken) : null;
+      if (!apiKey) throw new TRPCError({ code: "BAD_REQUEST", message: "Buffer isn't connected — add your Buffer API key in Integrations." });
+
+      const results = await createBufferPostMulti(apiKey, input.channelIds, {
+        text: input.text,
+        imageUrl: input.imageUrl,
+        scheduledAt: input.scheduledAt,
+      });
+      // Counted here rather than in the client so the UI renders numbers it
+      // was handed.
+      const succeeded = results.filter(r => r.ok).length;
+      await logActivity({
+        module: "social",
+        level: succeeded === results.length ? "success" : succeeded === 0 ? "error" : "warning",
+        title: `Social post: ${succeeded}/${results.length} channel(s)`,
+        detail: results.filter(r => !r.ok).map(r => `${r.channelId}: ${r.error}`).join("; ") || undefined,
+      }).catch(() => {});
+      return { succeeded, total: results.length, results };
+    }),
+
+  /**
+   * Drafts post copy for a set of networks. Kept short deliberately — social
+   * copy is a few lines, so the cap stays well under the long-form default.
+   */
+  draft: protectedProcedure
+    .input(z.object({ topic: z.string().min(2), tone: z.string().default("warm, premium") }))
+    .mutation(async ({ input }) => {
+      const response = await invokeLLM({
+        maxTokens: LLM_MAX_TOKENS.small,
+        messages: [
+          { role: "system", content: "You write short social copy for a premium home decor brand. Return JSON only." },
+          { role: "user", content: `Write a social post about: ${input.topic}. Tone: ${input.tone}. Under 280 characters so it fits every network. Include 3-5 relevant hashtags. Return JSON: { "text": string, "hashtags": string[] }` },
+        ],
+        response_format: { type: "json_schema", json_schema: { name: "social_post", strict: true, schema: { type: "object", properties: { text: { type: "string" }, hashtags: { type: "array", items: { type: "string" } } }, required: ["text", "hashtags"], additionalProperties: false } } },
+      });
+      const raw = response.choices[0]?.message?.content;
+      const parsed = JSON.parse(typeof raw === "string" ? raw : JSON.stringify(raw));
+      return { text: parsed.text as string, hashtags: (parsed.hashtags ?? []) as string[] };
+    }),
+});
+
 export const appRouter = router({
   system: systemRouter,
   auth: authRouter,
@@ -4624,6 +4698,7 @@ export const appRouter = router({
   inventory: inventoryRouter,
   fulfillment: fulfillmentRouter,
   orderRouting: orderRoutingRouter,
+  social: socialRouter,
   ads: adsRouter,
   audit: auditRouter,
   analytics: analyticsRouter,

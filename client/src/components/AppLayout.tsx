@@ -5,7 +5,7 @@ import { cn } from "@/lib/utils";
 import {
   LayoutDashboard, ShoppingBag, Search, FileText, Package, BarChart3, Megaphone,
   Settings, Zap, ChevronRight, LogOut, Loader2, ShieldCheck, Bot, TrendingUp, DollarSign,
-  Link2, Mail, Plug, Activity, Truck, UserCog,
+  Link2, Mail, Plug, Activity, Truck, UserCog, Share2,
 } from "lucide-react";
 import { trpc } from "@/lib/trpc";
 import ErrorBoundary from "@/components/ErrorBoundary";
@@ -32,6 +32,7 @@ const navSections = [
       { href: "/backlinker", label: "Backlinker", icon: Link2 },
       { href: "/email-campaigns", label: "Email Campaigns", icon: Mail },
       { href: "/ads", label: "Ads", icon: Megaphone },
+      { href: "/social", label: "Social", icon: Share2 },
     ],
   },
   {

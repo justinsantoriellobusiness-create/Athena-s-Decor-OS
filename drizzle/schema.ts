@@ -518,7 +518,7 @@ export type AuditFixLog = typeof auditFixLog.$inferSelect;
 export const integrationTokens = mysqlTable("integration_tokens", {
   id: int("id").autoincrement().primaryKey(),
   userId: int("userId").notNull(),
-  platform: mysqlEnum("platform", ["shopify", "ebay", "paypal", "google", "facebook", "tiktok", "autods", "cj_dropshipping", "dsers"]).notNull(),
+  platform: mysqlEnum("platform", ["shopify", "ebay", "paypal", "google", "facebook", "tiktok", "autods", "cj_dropshipping", "dsers", "buffer"]).notNull(),
   accessToken: text("accessToken"),
   refreshToken: text("refreshToken"),
   tokenExpiry: timestamp("tokenExpiry"),
