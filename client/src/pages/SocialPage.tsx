@@ -54,6 +54,28 @@ export default function SocialPage() {
     );
   }
 
+  // Surface a failed channel lookup instead of falling through to an empty
+  // composer. Buffer's GraphQL error text is the actionable part — if their
+  // schema differs from what the client sends, this is where that shows up.
+  if (channels.isError) {
+    return (
+      <div className="p-6">
+        <div className="flex items-start gap-3 rounded-lg border border-red-500/30 bg-red-500/5 p-4">
+          <AlertCircle className="w-4 h-4 mt-0.5 text-red-400 flex-shrink-0" />
+          <div className="text-sm min-w-0">
+            <p className="font-medium">Buffer request failed</p>
+            <p className="text-muted-foreground mt-1 break-words font-mono text-xs">
+              {channels.error.message}
+            </p>
+            <p className="text-muted-foreground mt-2">
+              Copy that message exactly — it names what Buffer rejected.
+            </p>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   if (channels.data && !channels.data.connected) {
     return (
       <div className="p-6">

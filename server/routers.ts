@@ -4622,11 +4622,21 @@ const settingsRouter = router({
 
 // ─── App Router ───────────────────────────────────────────────────────────────
 
+// Buffer's key can come from the Integrations page (stored encrypted in
+// integration_tokens) or from BUFFER_API_KEY in the environment. The env
+// fallback exists so the key can be provisioned from the deployment platform
+// without it having to travel through a chat window or a form. A key saved
+// through the UI wins.
+async function resolveBufferKey(userId: number): Promise<string | null> {
+  const token = await getIntegrationToken(userId, "buffer");
+  const stored = token?.accessToken ? decryptCredential(token.accessToken) : null;
+  return stored || process.env.BUFFER_API_KEY || null;
+}
+
 // Social publishing via Buffer — one key covers every connected network.
 const socialRouter = router({
   listChannels: protectedProcedure.query(async ({ ctx }) => {
-    const token = await getIntegrationToken(ctx.user.id, "buffer");
-    const apiKey = token?.accessToken ? decryptCredential(token.accessToken) : null;
+    const apiKey = await resolveBufferKey(ctx.user.id);
     if (!apiKey) return { connected: false as const, channels: [] };
     try {
       return { connected: true as const, channels: await listBufferChannels(apiKey) };
@@ -4643,8 +4653,7 @@ const socialRouter = router({
       scheduledAt: z.string().datetime().optional(),
     }))
     .mutation(async ({ ctx, input }) => {
-      const token = await getIntegrationToken(ctx.user.id, "buffer");
-      const apiKey = token?.accessToken ? decryptCredential(token.accessToken) : null;
+      const apiKey = await resolveBufferKey(ctx.user.id);
       if (!apiKey) throw new TRPCError({ code: "BAD_REQUEST", message: "Buffer isn't connected — add your Buffer API key in Integrations." });
 
       const results = await createBufferPostMulti(apiKey, input.channelIds, {
