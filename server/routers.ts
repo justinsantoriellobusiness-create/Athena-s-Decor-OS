@@ -17,6 +17,7 @@ import { fetchPayPalTransactions } from "./_core/paypal";
 import { fetchEbayTransactions } from "./_core/ebay";
 import { publishFacebookCampaign, publishTikTokCampaign } from "./_core/adPlatforms";
 import { listBufferChannels, createBufferPostMulti, testBufferConnection } from "./_core/buffer";
+import { runSystemCheck } from "./systemCheck";
 import { isFirecrawlConfigured, searchRealBacklinkCandidates, searchRealWebsiteCandidates, firecrawlScrapeContactInfo } from "./_core/firecrawl";
 import { hashPassword, verifyPasswordHash, safeEquals, isPinRateLimited, clearPinAttempts } from "./_core/passwordAuth";
 import { runFullAudit, applyAllAuditFixes } from "./auditRunner";
@@ -1961,21 +1962,16 @@ Return JSON: { "headline": string (max 40 chars), "bodyText": string (max 125 ch
         });
       }
 
-      const token = await getIntegrationToken(ctx.user.id, tokenPlatform);
-      if (!token || !token.accessToken || !token.metadata) {
+      const creds = await resolveAdPlatformCredentials(ctx.user.id, tokenPlatform);
+      if (!creds) {
         throw new TRPCError({ code: "BAD_REQUEST", message: `Connect ${tokenPlatform} in Settings → Integrations first (needs an access token and account ID).` });
       }
-      const accessToken = decryptCredential(token.accessToken);
-      const metadataJson = decryptCredential(token.metadata);
-      const meta = metadataJson ? JSON.parse(metadataJson) : {};
-      if (!accessToken || !meta.accountId) {
-        throw new TRPCError({ code: "BAD_REQUEST", message: `${tokenPlatform} connection is missing its account ID — reconnect in Integrations.` });
-      }
+      const { accessToken, accountId } = creds;
 
       const publishInput = { name: campaign.name, objective: campaign.objective || "traffic", dailyBudget: campaign.dailyBudget || 0 };
       const result = tokenPlatform === "facebook"
-        ? await publishFacebookCampaign({ accessToken, adAccountId: meta.accountId }, publishInput)
-        : await publishTikTokCampaign({ accessToken, advertiserId: meta.accountId }, publishInput);
+        ? await publishFacebookCampaign({ accessToken, adAccountId: accountId }, publishInput)
+        : await publishTikTokCampaign({ accessToken, advertiserId: accountId }, publishInput);
 
       if (!result.success) {
         await updateAdCampaign(input.campaignId, { status: "error" });
@@ -4622,6 +4618,34 @@ const settingsRouter = router({
 
 // ─── App Router ───────────────────────────────────────────────────────────────
 
+/**
+ * Resolves an ad-platform access token + account ID from the Integrations page
+ * (encrypted in integration_tokens) or, failing that, from the environment.
+ *
+ * The env fallback exists so ad credentials can be provisioned from the
+ * deployment platform. A connection saved through the UI always wins.
+ */
+async function resolveAdPlatformCredentials(
+  userId: number,
+  platform: "facebook" | "tiktok"
+): Promise<{ accessToken: string; accountId: string } | null> {
+  const token = await getIntegrationToken(userId, platform);
+  if (token?.accessToken && token.metadata) {
+    const accessToken = decryptCredential(token.accessToken);
+    const metadataJson = decryptCredential(token.metadata);
+    const meta = metadataJson ? JSON.parse(metadataJson) : {};
+    if (accessToken && meta.accountId) return { accessToken, accountId: meta.accountId };
+  }
+  const envToken = platform === "facebook"
+    ? process.env.FACEBOOK_ACCESS_TOKEN
+    : process.env.TIKTOK_ACCESS_TOKEN;
+  const envAccount = platform === "facebook"
+    ? process.env.FACEBOOK_AD_ACCOUNT_ID
+    : process.env.TIKTOK_ADVERTISER_ID;
+  if (envToken && envAccount) return { accessToken: envToken, accountId: envAccount };
+  return null;
+}
+
 // Buffer's key can come from the Integrations page (stored encrypted in
 // integration_tokens) or from BUFFER_API_KEY in the environment. The env
 // fallback exists so the key can be provisioned from the deployment platform
@@ -4694,6 +4718,21 @@ const socialRouter = router({
     }),
 });
 
+const systemCheckRouter = router({
+  /**
+   * Runs every live integration check. A mutation rather than a query so it
+   * only fires when explicitly asked — each run makes real outbound calls to
+   * Shopify, CJ, Meta, Buffer, eBay and the Monthly Plug intake.
+   */
+  run: protectedProcedure.mutation(async ({ ctx }) => {
+    return runSystemCheck({
+      userId: ctx.user.id,
+      resolveBufferKey: resolveBufferKey,
+      resolveAdCredentials: resolveAdPlatformCredentials,
+    });
+  }),
+});
+
 export const appRouter = router({
   system: systemRouter,
   auth: authRouter,
@@ -4708,6 +4747,7 @@ export const appRouter = router({
   fulfillment: fulfillmentRouter,
   orderRouting: orderRoutingRouter,
   social: socialRouter,
+  systemCheck: systemCheckRouter,
   ads: adsRouter,
   audit: auditRouter,
   analytics: analyticsRouter,
