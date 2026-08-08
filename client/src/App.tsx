@@ -9,6 +9,7 @@ import Dashboard from "./pages/Dashboard";
 import ShopifyPage from "./pages/ShopifyPage";
 import SeoPage from "./pages/SeoPage";
 import SocialPage from "./pages/SocialPage";
+import SystemCheckPage from "./pages/SystemCheckPage";
 import BlogPage from "./pages/BlogPage";
 import SourcingPage from "./pages/SourcingPage";
 import InventoryPage from "./pages/InventoryPage";
@@ -36,6 +37,7 @@ function Router() {
       <Route path="/shopify" component={() => <AppLayout><ShopifyPage /></AppLayout>} />
       <Route path="/seo" component={() => <AppLayout><SeoPage /></AppLayout>} />
       <Route path="/social" component={() => <AppLayout><SocialPage /></AppLayout>} />
+      <Route path="/system-check" component={() => <AppLayout><SystemCheckPage /></AppLayout>} />
       <Route path="/audit" component={() => <AppLayout><AuditPage /></AppLayout>} />
       <Route path="/blog" component={() => <AppLayout><BlogPage /></AppLayout>} />
       <Route path="/sourcing" component={() => <AppLayout><SourcingPage /></AppLayout>} />

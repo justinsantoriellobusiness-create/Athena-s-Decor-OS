@@ -5,7 +5,7 @@ import { cn } from "@/lib/utils";
 import {
   LayoutDashboard, ShoppingBag, Search, FileText, Package, BarChart3, Megaphone,
   Settings, Zap, ChevronRight, LogOut, Loader2, ShieldCheck, Bot, TrendingUp, DollarSign,
-  Link2, Mail, Plug, Activity, Truck, UserCog, Share2,
+  Link2, Mail, Plug, Activity, Truck, UserCog, Share2, Stethoscope,
 } from "lucide-react";
 import { trpc } from "@/lib/trpc";
 import ErrorBoundary from "@/components/ErrorBoundary";
@@ -54,6 +54,7 @@ const navSections = [
     items: [
       { href: "/settings", label: "Profile & Branding", icon: UserCog },
       { href: "/integrations", label: "Integrations", icon: Plug },
+      { href: "/system-check", label: "System Check", icon: Stethoscope },
       { href: "/shopify", label: "Shopify", icon: ShoppingBag },
       { href: "/scheduler", label: "Scheduler", icon: Settings },
     ],
